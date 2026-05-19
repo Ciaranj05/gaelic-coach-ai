@@ -28,7 +28,7 @@ PROGRESS_STAGES = {
     'event_selection': {'percent': 55, 'label': 'Selecting key review moments'},
     'event_analysis': {'percent': 72, 'label': 'Classifying kickouts, possession, transitions and scores'},
     'clip_extraction': {'percent': 82, 'label': 'Creating review clips'},
-    'report': {'percent': 92, 'label': 'Building Gaelic football report'},
+    'report': {'percent': 92, 'label': 'Building evidence-led Gaelic football report'},
     'complete': {'percent': 100, 'label': 'Report ready'},
     'failed': {'percent': 100, 'label': 'Analysis failed'}
 }
@@ -246,10 +246,26 @@ def build_event_candidates(url, metadata, profile, client=None, job_id=None, fac
     except Exception:
         return fallback_event_candidates(metadata)
 
+def event_quality(e):
+    if not isinstance(e, dict): return 0
+    c=e.get('classification',{}) or {}; mi=e.get('matchIntelligence',{}) or {}; so=e.get('scoreOutcome',{}) or {}
+    score=0
+    if c.get('confidence')=='high': score+=3
+    elif c.get('confidence')=='medium': score+=2
+    if mi.get('confidence')=='high': score+=3
+    elif mi.get('confidence')=='medium': score+=2
+    if c.get('coachingValue')=='high' or mi.get('coachingValue')=='high': score+=2
+    if so.get('outcome') not in [None,'unknown']: score+=2
+    if mi.get('kickoutOutcome') not in [None,'unknown','not_kickout']: score+=2
+    if mi.get('transitionOutcome') not in [None,'unknown','not_transition']: score+=2
+    if mi.get('possessionOutcome') in ['turnover_for','turnover_against','won_back','lost']: score+=2
+    if e.get('clip'): score+=1
+    return score
+
 def build_timeline(events):
     groups={k:[] for k in ['scores','wides','kickouts','turnovers','transitions','defence','possession','other']}
     for e in events:
-        if not isinstance(e,dict): continue
+        if not isinstance(e,dict) or event_quality(e) < 3: continue
         so=e.get('scoreOutcome',{}) or {}; mi=e.get('matchIntelligence',{}) or {}; group=mi.get('timelineGroup','other')
         if so.get('outcome') in ['point','goal']: group='scores'
         elif so.get('outcome')=='wide': group='wides'
@@ -260,82 +276,154 @@ def build_timeline(events):
         groups[group if group in groups else 'other'].append(item)
     return groups
 
-def build_report_prompt(coached, opposition, facts, rules, metadata, events, timeline, notes, profile):
+def aggregate_evidence(events, facts):
+    evidence = {
+        'eventsAnalysed': len([e for e in events if isinstance(e, dict)]),
+        'highValueEvents': 0,
+        'surfacedEvents': 0,
+        'scoresDetected': 0,
+        'widesDetected': 0,
+        'savesDetected': 0,
+        'blockedShotsDetected': 0,
+        'kickoutRetained': 0,
+        'kickoutLost': 0,
+        'kickoutContested': 0,
+        'breakingBallWinsOrContests': 0,
+        'turnoversFor': 0,
+        'turnoversAgainst': 0,
+        'transitionPositive': 0,
+        'transitionNegative': 0,
+        'clipsAvailable': 0,
+        'teamColourConfidence': 'low',
+        'evidenceBullets': [],
+        'coachingTriggers': []
+    }
+    for e in events:
+        if not isinstance(e, dict): continue
+        q = event_quality(e)
+        if q >= 3: evidence['surfacedEvents'] += 1
+        if q >= 6: evidence['highValueEvents'] += 1
+        if e.get('clip'): evidence['clipsAvailable'] += 1
+        so = e.get('scoreOutcome', {}) or {}; mi = e.get('matchIntelligence', {}) or {}; tc = e.get('teamColours', {}) or {}
+        if tc.get('confidence') in ['medium','high']: evidence['teamColourConfidence'] = tc.get('confidence')
+        outcome = so.get('outcome')
+        if outcome in ['point','goal']: evidence['scoresDetected'] += 1
+        elif outcome == 'wide': evidence['widesDetected'] += 1
+        elif outcome == 'save': evidence['savesDetected'] += 1
+        elif outcome == 'blocked': evidence['blockedShotsDetected'] += 1
+        ko = mi.get('kickoutOutcome')
+        if ko in ['short_retained','won_clean','won_breaking_ball']: evidence['kickoutRetained'] += 1
+        elif ko in ['lost_clean','lost_breaking_ball','pressed_into_turnover']: evidence['kickoutLost'] += 1
+        elif ko == 'contested_unknown': evidence['kickoutContested'] += 1
+        if ko in ['won_breaking_ball','lost_breaking_ball','contested_unknown'] or e.get('type') == 'breaking_ball': evidence['breakingBallWinsOrContests'] += 1
+        po = mi.get('possessionOutcome')
+        if po in ['turnover_for','won_back']: evidence['turnoversFor'] += 1
+        elif po in ['turnover_against','lost']: evidence['turnoversAgainst'] += 1
+        tr = mi.get('transitionOutcome')
+        if tr in ['created_score','created_chance','carried_to_scoring_zone']: evidence['transitionPositive'] += 1
+        elif tr in ['slowed_down','forced_backwards','turned_over','conceded_counter']: evidence['transitionNegative'] += 1
+    if evidence['kickoutRetained'] > evidence['kickoutLost']:
+        evidence['evidenceBullets'].append(f"Kickout platform looked positive in {evidence['kickoutRetained']} classified restart phase(s).")
+    elif evidence['kickoutLost'] > evidence['kickoutRetained']:
+        evidence['evidenceBullets'].append(f"Kickout/restart pressure showed up in {evidence['kickoutLost']} loss or turnover phase(s).")
+        evidence['coachingTriggers'].append('kickout_support')
+    if evidence['turnoversFor'] > evidence['turnoversAgainst']:
+        evidence['evidenceBullets'].append(f"Middle-third pressure produced {evidence['turnoversFor']} useful turnover cue(s).")
+    elif evidence['turnoversAgainst'] > evidence['turnoversFor']:
+        evidence['evidenceBullets'].append(f"Possession security needs review: {evidence['turnoversAgainst']} turnover-against cue(s) surfaced.")
+        evidence['coachingTriggers'].append('possession_security')
+    if evidence['transitionPositive'] > 0:
+        evidence['evidenceBullets'].append(f"Transition play created {evidence['transitionPositive']} positive attacking cue(s).")
+    if evidence['transitionNegative'] > evidence['transitionPositive']:
+        evidence['coachingTriggers'].append('transition_execution')
+    if evidence['scoresDetected'] or evidence['widesDetected'] or evidence['savesDetected'] or evidence['blockedShotsDetected']:
+        evidence['evidenceBullets'].append(f"Shot-outcome cues: {evidence['scoresDetected']} score(s), {evidence['widesDetected']} wide(s), {evidence['savesDetected']} save(s), {evidence['blockedShotsDetected']} block(s).")
+    if facts.get('coachedGoals',0) >= 5:
+        evidence['coachingTriggers'].append('protect_goal_threat_strength')
+    if not evidence['evidenceBullets']:
+        evidence['evidenceBullets'].append('Limited high-confidence event evidence surfaced; report should stay conservative and scoreline-led.')
+    return evidence
+
+def build_report_prompt(coached, opposition, facts, rules, metadata, events, timeline, match_evidence, notes, profile):
     return f'''You are an elite Gaelic football performance analyst working directly for {coached}.
-Create a short Gaelic football manager debrief for {coached}. Use classified event evidence, team colour evidence, score outcomes, kickout outcomes, possession/turnover outcomes, transition outcomes and clips as approximate evidence.
+Create a short, evidence-led Gaelic football manager debrief for {coached}. Build conclusions from MATCH EVIDENCE first, then from scoreline. Do not write generic prose.
 MATCH FACTS: {facts}
 SCORELINE RULES: {rules}
 VIDEO METADATA: {metadata}
+MATCH EVIDENCE COUNTERS: {match_evidence}
 CLASSIFIED EVENTS: {events}
 KEY MOMENTS TIMELINE: {timeline}
 COACH NOTES: {notes}
 PROFILE: {profile}
-Rules: This is Gaelic football. Use kickouts, breaking ball, middle third, runners from deep, direct ball inside, D protection, counter-press, kick-pass threat, shot selection, game management. Team colour and possession evidence is approximate; never overclaim ownership if unclear. Never contradict final scoreline or invent scorers.
+Rules:
+- This is Gaelic football. Use kickouts, breaking ball, middle third, runners from deep, direct ball inside, D protection, counter-press, kick-pass threat, shot selection, game management.
+- Do NOT surface repeated unknown outcomes. If an event is unclear, omit it or say evidence was limited.
+- Prioritise counted evidence: kickout retained/lost, turnovers, transition positive/negative, shot outcomes, clips available.
+- If {coached} scored {facts['coachedGoals']} goals, treat goal threat as a strength, not a weakness.
+- Team colour and possession evidence is approximate; never overclaim ownership if unclear.
+- Never contradict final scoreline or invent scorers.
+- Reduce waffle. Every row must contain a specific tactical observation or evidence cue.
 Return this exact markdown structure:
 # {coached} – Match Snapshot
 | Item | Detail |
 |---|---|
 | Scoreline | {facts['scoreline']} |
 | Result | {coached} {facts['coachedTeamResult']} by {facts['margin']} point(s) |
-| Core Story | One direct Gaelic football tactical sentence. |
+| Core Story | One direct evidence-led Gaelic football sentence. |
+
+# {coached} – Evidence Summary
+| Evidence Area | What The Analysis Found |
+|---|---|
+| Review Windows | Use eventsAnalysed, surfacedEvents and clipsAvailable from MATCH EVIDENCE COUNTERS |
+| Kickout / Restart | Specific count-led finding from kickoutRetained, kickoutLost, kickoutContested |
+| Turnover Battle | Specific count-led finding from turnoversFor and turnoversAgainst |
+| Transition Impact | Specific count-led finding from transitionPositive and transitionNegative |
+| Shot Outcomes | Specific count-led finding from scoresDetected, widesDetected, savesDetected and blockedShotsDetected |
 
 # {coached} – Match-Deciding Factor
-One blunt Gaelic football paragraph, max 45 words.
+One blunt Gaelic football paragraph, max 45 words. Tie it to scoreline plus strongest evidence counters.
 
 # {coached} – Estimated Key Match Stats
 | Metric | {coached} | {opposition} |
 |---|---|---|
-| Possession | estimated range/label + colour/phase evidence if available + ✅/⚠️/❌ | estimated range/label + colour/phase evidence if available + ✅/⚠️/❌ |
-| Shot Creation | estimated label + observation + ✅/⚠️/❌ | estimated label + observation + ✅/⚠️/❌ |
-| Goal Threat | {facts['coachedGoals']} goals + tactical label + ✅/⚠️/❌ | {facts['oppositionGoals']} goals + tactical label + ✅/⚠️/❌ |
+| Goal Threat | {facts['coachedGoals']} goals + evidence-led tactical label + ✅/⚠️/❌ | {facts['oppositionGoals']} goals + evidence-led tactical label + ✅/⚠️/❌ |
 | Point Output | {facts['coachedPoints']} points + tactical label + ✅/⚠️/❌ | {facts['oppositionPoints']} points + tactical label + ✅/⚠️/❌ |
-| Scoring Bursts | use score outcome cues if available | use score outcome cues if available |
-| Kickout / Restart Retention | use kickout outcomes and colour evidence + ✅/⚠️/❌ | use kickout outcomes and colour evidence + ✅/⚠️/❌ |
+| Kickout Platform | count-led restart finding + ✅/⚠️/❌ | count-led restart finding + ✅/⚠️/❌ |
 | Breaking Ball | use breaking-ball/kickout cues + ✅/⚠️/❌ | use breaking-ball/kickout cues + ✅/⚠️/❌ |
-| Turnover Impact | use possession/turnover classifier + ✅/⚠️/❌ | use possession/turnover classifier + ✅/⚠️/❌ |
-
-# {coached} – Tactical Comparison
-| Area | {coached} | {opposition} |
-|---|---|---|
-| Transition Through Middle Third | use transition outcomes + ✅/⚠️/❌ | use transition outcomes + ✅/⚠️/❌ |
-| Direct Ball Inside | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
-| Kick-Pass Threat | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
-| Shot Selection | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
-| Turnovers / Counter-Press | use turnover outcomes + ✅/⚠️/❌ | use turnover outcomes + ✅/⚠️/❌ |
-| Kickout Platform | use kickout outcomes + ✅/⚠️/❌ | use kickout outcomes + ✅/⚠️/❌ |
-| D Protection / Defensive Screen | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
+| Turnover Impact | use turnover counts + ✅/⚠️/❌ | use turnover counts + ✅/⚠️/❌ |
+| Transition Threat | use transition counts + ✅/⚠️/❌ | use transition counts + ✅/⚠️/❌ |
 
 # {coached} – Key Moments Timeline
 | Time | Category | Outcome | Team / Colour Cue | Why It Matters |
 |---|---|---|---|---|
-| Use classified timeline moments | scores/wides/kickouts/turnovers/transitions | outcome | team/colour cue or unknown | specific coaching reason |
+| Only include useful classified timeline moments. Do not include rows with all unknowns. | scores/wides/kickouts/turnovers/transitions | outcome | team/colour cue or evidence limited | specific coaching reason |
 
 # {coached} – Review Clips
-| Clip | Event Type | Score/Kickout/Transition Outcome | Team / Colour Cue | Why Review It |
-|---|---|---|---|---|
-| Use available clip links from classified events | event type | outcome | team/colour cue or unknown | one specific coaching reason |
+| Clip | Event Type | Outcome | Why Review It |
+|---|---|---|---|
+| Use available clip links from classified events only | event type | score/kickout/turnover/transition outcome | one specific coaching reason |
 
 # {coached} – Main Focus Areas Going Forward
-| Priority | Why It Matters For {coached} | Coaching Action |
+| Priority | Evidence Trigger | Coaching Action |
 |---|---|---|
-| Specific Gaelic football focus 1 | match-specific reason | practical action |
-| Specific Gaelic football focus 2 | match-specific reason | practical action |
-| Specific Gaelic football focus 3 | match-specific reason | practical action |
+| Specific Gaelic football focus 1 | use match_evidence counter/trigger | practical session action |
+| Specific Gaelic football focus 2 | use match_evidence counter/trigger | practical session action |
+| Specific Gaelic football focus 3 | use match_evidence counter/trigger | practical session action |
 
 # {coached} – Key Manager Takeaway
-One short quote, max 55 words.'''
+One short quote, max 55 words. Must sound like a Gaelic football manager after video review, not a generic AI summary.'''
 
 def generate_analysis(request, job_id=None):
     api_key=os.getenv('OPENAI_API_KEY')
     if not api_key: raise HTTPException(status_code=500, detail='OPENAI_API_KEY is missing')
     client=OpenAI(api_key=api_key); profile=processing_profile(request.url); facts=build_match_facts(request.matchContext or {})
     set_job_stage(job_id,'metadata','Reading video title, duration and match metadata'); metadata=extract_video_metadata(request.url)
-    events=build_event_candidates(request.url, metadata, profile, client, job_id, facts); timeline=build_timeline(events)
+    events=build_event_candidates(request.url, metadata, profile, client, job_id, facts); timeline=build_timeline(events); match_evidence=aggregate_evidence(events, facts)
     set_job_stage(job_id,'clip_extraction','Review clips created for selected moments')
     coached=facts['coachedTeam']; opposition=facts['teamB'] if facts['teamA']==coached else facts['teamA']
-    prompt=build_report_prompt(coached,opposition,facts,build_scoreline_rules(facts),metadata,events,timeline,request.notes,profile)
-    set_job_stage(job_id,'report','Building final manager debrief report')
-    res=client.chat.completions.create(model='gpt-4o-mini',messages=[{'role':'system','content':'You produce concise Gaelic football manager debrief reports using classified event evidence, team colour evidence, kickout outcomes, possession outcomes, transition outcomes and scoreline-aware tactical insights.'},{'role':'user','content':prompt}])
+    prompt=build_report_prompt(coached,opposition,facts,build_scoreline_rules(facts),metadata,events,timeline,match_evidence,request.notes,profile)
+    set_job_stage(job_id,'report','Building evidence-led manager debrief report')
+    res=client.chat.completions.create(model='gpt-4o-mini',messages=[{'role':'system','content':'You produce concise evidence-led Gaelic football manager dashboards. You use counted tactical evidence before prose and avoid generic analysis.'},{'role':'user','content':prompt}])
     clips=[e.get('clip') for e in events if isinstance(e,dict) and e.get('clip')]
     classifications=[e.get('classification') for e in events if isinstance(e,dict) and e.get('classification')]
     team_colours=[e.get('teamColours') for e in events if isinstance(e,dict) and e.get('teamColours')]
@@ -343,7 +431,7 @@ def generate_analysis(request, job_id=None):
     kickouts=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('kickoutOutcome') not in [None,'not_kickout','unknown']]
     turnovers=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('possessionOutcome') in ['turnover_for','turnover_against','lost','won_back']]
     transitions=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('transitionOutcome') not in [None,'not_transition','unknown']]
-    return {'status':'complete','mode':'worker','analysis':res.choices[0].message.content,'videoMetadata':metadata,'matchFacts':facts,'processingProfile':profile['name'],'eventCandidates':events,'eventClassifications':classifications,'teamColours':team_colours,'scoringCues':scoring,'kickoutEvents':kickouts,'turnoverEvents':turnovers,'transitionEvents':transitions,'keyMomentsTimeline':timeline,'clips':clips}
+    return {'status':'complete','mode':'worker','analysis':res.choices[0].message.content,'videoMetadata':metadata,'matchFacts':facts,'processingProfile':profile['name'],'matchEvidence':match_evidence,'eventCandidates':events,'eventClassifications':classifications,'teamColours':team_colours,'scoringCues':scoring,'kickoutEvents':kickouts,'turnoverEvents':turnovers,'transitionEvents':transitions,'keyMomentsTimeline':timeline,'clips':clips}
 
 def run_analysis_job(job_id, request):
     try:
