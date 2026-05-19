@@ -30,6 +30,13 @@ def openai_status():
     }
 
 
+def format_timestamp(seconds: float):
+    seconds = max(0, int(seconds or 0))
+    minutes = seconds // 60
+    remaining = seconds % 60
+    return f'{minutes:02d}:{remaining:02d}'
+
+
 def extract_video_metadata(url: str):
     try:
         ydl_opts = {
@@ -143,18 +150,32 @@ def transcribe_audio_from_youtube(url: str, client: OpenAI):
             audio_path = os.path.join(tmpdir, 'audio.mp3')
 
             if not os.path.exists(audio_path):
-                return ''
+                return {'text': '', 'segments': ''}
 
             with open(audio_path, 'rb') as audio_file:
                 transcript = client.audio.transcriptions.create(
                     model='whisper-1',
-                    file=audio_file
+                    file=audio_file,
+                    response_format='verbose_json'
                 )
 
-            return transcript.text
+            text = getattr(transcript, 'text', '') or ''
+            raw_segments = getattr(transcript, 'segments', None) or []
+            timestamped_segments = []
+
+            for segment in raw_segments[:80]:
+                start = segment.get('start') if isinstance(segment, dict) else getattr(segment, 'start', 0)
+                segment_text = segment.get('text') if isinstance(segment, dict) else getattr(segment, 'text', '')
+                if segment_text:
+                    timestamped_segments.append(f'{format_timestamp(start)} - {segment_text.strip()}')
+
+            return {
+                'text': text,
+                'segments': '\n'.join(timestamped_segments)
+            }
 
     except Exception:
-        return ''
+        return {'text': '', 'segments': ''}
 
 
 def extract_frames_from_youtube(url: str, client: OpenAI):
@@ -175,7 +196,7 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
                 ydl.download([url])
 
             if not os.path.exists(video_path):
-                return ''
+                return {'observations': '', 'moments': ''}
 
             subprocess.run(
                 [
@@ -196,20 +217,30 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
             ])[:60]
 
             if not frame_paths:
-                return ''
+                return {'observations': '', 'moments': ''}
 
             frame_batches = [frame_paths[i:i + 10] for i in range(0, len(frame_paths), 10)]
             observations = []
+            moments = []
 
             for batch_number, frame_batch in enumerate(frame_batches, start=1):
+                batch_start_seconds = (batch_number - 1) * 10 * 60
+                batch_end_seconds = batch_start_seconds + ((len(frame_batch) - 1) * 60)
+                batch_window = f'{format_timestamp(batch_start_seconds)} to {format_timestamp(batch_end_seconds)}'
+
                 content = [
                     {
                         'type': 'text',
-                        'text': 'Review these sampled Gaelic games frames. Only describe visible tactical evidence: spacing, player density, attacking width, defensive compactness, kickout/restart shape, transition spacing and pressure. Do not infer the score, winner, equaliser, draw, player names or exact events from frames. State uncertainty where evidence is weak.'
+                        'text': f'Review these sampled Gaelic games frames from approximately {batch_window}. Each image is roughly 60 seconds apart. Only describe visible tactical evidence: spacing, player density, attacking width, defensive compactness, kickout/restart shape, transition spacing and pressure. Return 3-5 timestamped moments using approximate timestamps from this window. Do not infer the score, winner, equaliser, draw, player names or exact scoring events from frames. State uncertainty where evidence is weak.'
                     }
                 ]
 
-                for frame_path in frame_batch:
+                for index, frame_path in enumerate(frame_batch):
+                    frame_timestamp = format_timestamp(batch_start_seconds + (index * 60))
+                    content.append({
+                        'type': 'text',
+                        'text': f'Frame approximate timestamp: {frame_timestamp}'
+                    })
                     with open(frame_path, 'rb') as image_file:
                         encoded = base64.b64encode(image_file.read()).decode('utf-8')
                         content.append({
@@ -225,12 +256,17 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
                     messages=[{'role': 'user', 'content': content}]
                 )
 
-                observations.append(response.choices[0].message.content or '')
+                batch_observation = response.choices[0].message.content or ''
+                observations.append(f'FRAME BATCH {batch_number} ({batch_window})\n{batch_observation}')
+                moments.append(batch_observation)
 
-            return '\n\n'.join(observations)
+            return {
+                'observations': '\n\n'.join(observations),
+                'moments': '\n\n'.join(moments)
+            }
 
     except Exception:
-        return ''
+        return {'observations': '', 'moments': ''}
 
 
 @app.post('/analyse-video')
@@ -243,8 +279,13 @@ def analyse_video(request: AnalyseRequest):
     client = OpenAI(api_key=api_key)
 
     metadata = extract_video_metadata(request.url)
-    transcript = transcribe_audio_from_youtube(request.url, client)
-    visual_observations = extract_frames_from_youtube(request.url, client)
+    transcript_data = transcribe_audio_from_youtube(request.url, client)
+    frame_data = extract_frames_from_youtube(request.url, client)
+
+    transcript = transcript_data['text']
+    timestamped_transcript = transcript_data['segments']
+    visual_observations = frame_data['observations']
+    timestamped_frame_moments = frame_data['moments']
 
     match_context = request.matchContext or {}
     match_facts = build_match_facts(match_context)
@@ -284,8 +325,9 @@ IMPORTANT ANALYSIS RULES:
 - Separate hard facts from uncertain visual inference.
 - Never invent exact events, possessions, scores, equalisers or player identities.
 - Avoid generic filler such as "rollercoaster", "dynamic movement", "communication gaps", "spatial awareness" unless supported by evidence.
-- Every training recommendation must connect to a specific observed issue or scoreline implication.
+- Every training recommendation must connect to a specific observed issue, scoreline implication, timestamped frame observation or transcript moment.
 - Prefer concise tactical insight over long prose.
+- Timestamps are approximate and should be labelled as approximate.
 
 MATCH CONTEXT
 {match_context}
@@ -299,11 +341,17 @@ Description: {metadata['description']}
 MATCH URL
 {request.url}
 
+TIMESTAMPED TRANSCRIPT SEGMENTS
+{timestamped_transcript[:12000]}
+
 TRANSCRIPT / COMMENTARY
-{transcript[:10000]}
+{transcript[:8000]}
+
+TIMESTAMPED FRAME MOMENTS
+{timestamped_frame_moments[:12000]}
 
 VISUAL FRAME OBSERVATIONS
-{visual_observations[:12000]}
+{visual_observations[:10000]}
 
 COACH NOTES
 {request.notes}
@@ -315,6 +363,11 @@ Return a concise premium coaching report with these exact sections:
 
 # Why {coached_team} {match_facts['coachedTeamResult']}
 - explain the main tactical reasons, grounded in scoreline and available evidence
+
+# Key Timestamped Moments
+- 5 to 8 approximate timestamps
+- each item must include timestamp, observation, impact, coaching note
+- if evidence is weak, say "approximate / low confidence"
 
 # Strengths Shown By {coached_team}
 - maximum 4 specific strengths
@@ -349,7 +402,7 @@ Do not repeat the executive summary inside other sections.
         messages=[
             {
                 'role': 'system',
-                'content': 'You are an elite Gaelic games tactical analyst. You obey hard scoreline facts, avoid contradictions, and produce evidence-first coaching intelligence.'
+                'content': 'You are an elite Gaelic games tactical analyst. You obey hard scoreline facts, avoid contradictions, and produce evidence-first coaching intelligence with timestamped review points.'
             },
             {
                 'role': 'user',
@@ -367,7 +420,9 @@ Do not repeat the executive summary inside other sections.
         'videoMetadata': metadata,
         'matchFacts': match_facts,
         'transcriptLength': len(transcript),
+        'timestampedTranscriptLength': len(timestamped_transcript),
         'visualAnalysisLength': len(visual_observations),
+        'timestampedFrameMomentsLength': len(timestamped_frame_moments),
         'framesSampledTarget': 60,
-        'next_stage': 'Future upgrade: timestamped event detection, tactical tagging and clip generation.'
+        'next_stage': 'Future upgrade: clip generation from timestamped moments.'
     }
