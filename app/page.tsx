@@ -1,33 +1,73 @@
+import Link from 'next/link'
+import UploadCard from '@/components/upload-card'
+
 export default function HomePage() {
   return (
-    <main className="min-h-screen bg-black text-white p-10">
-      <h1 className="text-6xl font-bold">Gaelic Coach AI</h1>
-      <p className="mt-6 text-zinc-400 text-xl max-w-2xl">
-        AI-powered match analysis for Gaelic football and hurling coaches.
-      </p>
+    <main className="min-h-screen bg-black text-white">
+      <section className="relative overflow-hidden border-b border-white/10">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,197,94,0.22),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(59,130,246,0.2),transparent_35%)]" />
 
-      <div className="mt-12 grid gap-6 md:grid-cols-3">
-        <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-          <h2 className="text-2xl font-semibold">Upload Matches</h2>
-          <p className="mt-3 text-zinc-400">
-            Upload full match footage from any device.
-          </p>
-        </div>
+        <div className="relative mx-auto max-w-7xl px-6 py-24 lg:px-8">
+          <div className="grid gap-16 lg:grid-cols-2 lg:items-center">
+            <div>
+              <div className="inline-flex rounded-full border border-green-400/20 bg-green-400/10 px-4 py-2 text-sm text-green-300">
+                AI-powered analysis for Gaelic coaches
+              </div>
 
-        <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-          <h2 className="text-2xl font-semibold">Generate Reports</h2>
-          <p className="mt-3 text-zinc-400">
-            AI tactical summaries and coaching insights.
-          </p>
-        </div>
+              <h1 className="mt-8 text-6xl font-black leading-tight tracking-tight lg:text-7xl">
+                Turn match footage into coaching insights.
+              </h1>
 
-        <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-          <h2 className="text-2xl font-semibold">Create Clips</h2>
-          <p className="mt-3 text-zinc-400">
-            Automatically build highlight and analysis clips.
-          </p>
+              <p className="mt-8 max-w-2xl text-lg leading-8 text-zinc-400">
+                Upload Gaelic football or hurling matches, generate AI reports, create training plans, and improve team performance faster.
+              </p>
+
+              <div className="mt-10 flex flex-wrap gap-4">
+                <Link
+                  href="/reports"
+                  className="rounded-2xl bg-green-400 px-6 py-4 font-semibold text-black transition hover:bg-green-300"
+                >
+                  View Demo Report
+                </Link>
+
+                <Link
+                  href="/upload"
+                  className="rounded-2xl border border-white/10 bg-white/5 px-6 py-4 font-semibold backdrop-blur transition hover:bg-white/10"
+                >
+                  Upload Match
+                </Link>
+              </div>
+            </div>
+
+            <UploadCard />
+          </div>
         </div>
-      </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-6 py-20 lg:px-8">
+        <div className="grid gap-6 md:grid-cols-3">
+          <div className="rounded-[2rem] border border-white/10 bg-white/[0.05] p-8">
+            <h2 className="text-3xl font-bold">Upload Matches</h2>
+            <p className="mt-4 text-zinc-400">
+              Upload full games from Veo, phones, drones, or sideline cameras.
+            </p>
+          </div>
+
+          <div className="rounded-[2rem] border border-white/10 bg-white/[0.05] p-8">
+            <h2 className="text-3xl font-bold">AI Reports</h2>
+            <p className="mt-4 text-zinc-400">
+              Generate tactical summaries, momentum shifts, and training focus areas.
+            </p>
+          </div>
+
+          <div className="rounded-[2rem] border border-white/10 bg-white/[0.05] p-8">
+            <h2 className="text-3xl font-bold">Create Clips</h2>
+            <p className="mt-4 text-zinc-400">
+              Automatically create clips for scores, turnovers, and kickout sequences.
+            </p>
+          </div>
+        </div>
+      </section>
     </main>
   )
 }
