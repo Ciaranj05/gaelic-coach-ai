@@ -1,8 +1,23 @@
 import { NextResponse } from 'next/server'
 
+type MatchContext = {
+  teamA?: string
+  teamB?: string
+  coachedTeam?: string
+  teamAColour?: string
+  teamBColour?: string
+  teamAGoals?: number
+  teamAPoints?: number
+  teamBGoals?: number
+  teamBPoints?: number
+  scoreline?: string
+  competition?: string
+}
+
 type AnalyseRequest = {
   url?: string
   notes?: string
+  matchContext?: MatchContext
 }
 
 type CoachingReport = {
@@ -22,24 +37,33 @@ function isSupportedUrl(url: string) {
   return url.includes('youtube.com') || url.includes('youtu.be') || url.includes('vimeo.com') || url.includes('veo.co')
 }
 
-function buildDemoReport(url: string): CoachingReport {
+function formatScore(context?: MatchContext) {
+  if (!context?.teamA || !context?.teamB) return context?.scoreline ?? 'Unavailable'
+
+  const aGoals = Number(context.teamAGoals ?? 0)
+  const aPoints = Number(context.teamAPoints ?? 0)
+  const bGoals = Number(context.teamBGoals ?? 0)
+  const bPoints = Number(context.teamBPoints ?? 0)
+
+  return `${context.teamA} ${aGoals}-${aPoints} (${aGoals * 3 + aPoints}) vs ${context.teamB} ${bGoals}-${bPoints} (${bGoals * 3 + bPoints})`
+}
+
+function buildDemoReport(url: string, matchContext?: MatchContext): CoachingReport {
   return {
     sourceUrl: url,
     status: 'complete',
     mode: 'demo',
     summary: 'Demo report generated. The Railway worker was not reached, or no analysis input was available.',
-    scoreline: 'Unavailable until match data is provided',
+    scoreline: formatScore(matchContext),
     keyInsights: [
-      'Kickout retention and second-ball response should be reviewed.',
-      'Transition defence is a priority after turnovers in the middle third.',
-      'Attacking shape is strongest when support runners arrive from deep.',
-      'Shot selection should be reviewed from wide angles and under pressure.'
+      'Railway worker was not reached, so this is fallback output.',
+      'Check WORKER_API_URL and Railway deployment logs.',
+      'Once connected, analysis will use teams, colours, scoreline, transcript and sampled frames.'
     ],
     trainingFocus: [
-      'Kickout exit patterns under pressure',
-      'Transition defence recovery runs',
-      'Support play after turnovers won',
-      'Decision-making in the scoring zone'
+      'Confirm Railway worker is online.',
+      'Confirm OpenAI key is configured in Railway.',
+      'Redeploy Vercel after environment variable changes.'
     ],
     timeline: [],
     nextSteps: [
@@ -55,10 +79,10 @@ function splitAnalysisIntoBullets(text: string) {
     .split('\n')
     .map((line) => line.replace(/^[-*#\d.\s]+/, '').trim())
     .filter((line) => line.length > 20)
-    .slice(0, 6)
+    .slice(0, 8)
 }
 
-async function callRailwayWorker(url: string, notes: string): Promise<CoachingReport | null> {
+async function callRailwayWorker(url: string, notes: string, matchContext?: MatchContext): Promise<CoachingReport | null> {
   const workerUrl = process.env.WORKER_API_URL?.replace(/\/$/, '')
 
   if (!workerUrl) {
@@ -68,7 +92,7 @@ async function callRailwayWorker(url: string, notes: string): Promise<CoachingRe
   const response = await fetch(`${workerUrl}/analyse-video`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, notes }),
+    body: JSON.stringify({ url, notes, matchContext }),
     cache: 'no-store'
   })
 
@@ -84,22 +108,22 @@ async function callRailwayWorker(url: string, notes: string): Promise<CoachingRe
     sourceUrl: url,
     status: 'complete',
     mode: 'worker',
-    summary: bullets[0] ?? 'Railway worker generated a coaching report.',
-    scoreline: 'Provided in coach notes if available',
+    summary: bullets[0] ?? `${matchContext?.coachedTeam ?? 'The coached team'} report generated.`,
+    scoreline: formatScore(matchContext),
     keyInsights: bullets.slice(0, 4),
     trainingFocus: bullets.slice(4, 8).length ? bullets.slice(4, 8) : [
-      'Review kickout strategy and retention under pressure.',
-      'Work on transition defence after turnovers.',
+      `Review ${matchContext?.coachedTeam ?? 'the coached team'} kickout strategy and retention under pressure.`,
+      `Work on ${matchContext?.coachedTeam ?? 'the coached team'} transition defence after turnovers.`,
       'Improve decision-making and shot selection in scoring zones.'
     ],
     timeline: [],
-    nextSteps: ['Next step: connect real YouTube download, transcript extraction and frame analysis.'],
+    nextSteps: ['Use the full report to select three training-ground priorities for the next session.'],
     rawAnalysis: analysis
   }
 }
 
-async function generateAiReport(url: string, notes: string): Promise<CoachingReport> {
-  const workerReport = await callRailwayWorker(url, notes)
+async function generateAiReport(url: string, notes: string, matchContext?: MatchContext): Promise<CoachingReport> {
+  const workerReport = await callRailwayWorker(url, notes, matchContext)
 
   if (workerReport) {
     return workerReport
@@ -108,7 +132,7 @@ async function generateAiReport(url: string, notes: string): Promise<CoachingRep
   const apiKey = process.env.OPENAI_API_KEY
 
   if (!apiKey || !notes.trim()) {
-    return buildDemoReport(url)
+    return buildDemoReport(url, matchContext)
   }
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -123,25 +147,25 @@ async function generateAiReport(url: string, notes: string): Promise<CoachingRep
       messages: [
         {
           role: 'system',
-          content: 'You are an expert Gaelic football and hurling performance analyst. Return valid JSON only with this exact shape: summary string, scoreline string, keyInsights string array, trainingFocus string array, timeline array of objects with minute and note, nextSteps string array. Be practical, coach-focused, and avoid claiming to see video unless details are present in the notes.'
+          content: 'You are an evidence-first Gaelic football and hurling performance analyst. Return valid JSON only with this exact shape: summary string, scoreline string, keyInsights string array, trainingFocus string array, timeline array of objects with minute and note, nextSteps string array. Use team names throughout. Analyse from the coached team perspective. Avoid generic coaching clichés. Do not invent events. If evidence is weak, state what is uncertain.'
         },
         {
           role: 'user',
-          content: `Analyse this match context for a Gaelic coach. Match URL: ${url}\n\nAvailable notes, transcript or tagged moments:\n${notes}`
+          content: `Match context: ${JSON.stringify(matchContext)}\nMatch URL: ${url}\nNotes/transcript/tags:\n${notes}`
         }
       ]
     })
   })
 
   if (!response.ok) {
-    return buildDemoReport(url)
+    return buildDemoReport(url, matchContext)
   }
 
   const data = await response.json()
   const content = data.choices?.[0]?.message?.content
 
   if (!content) {
-    return buildDemoReport(url)
+    return buildDemoReport(url, matchContext)
   }
 
   const parsed = JSON.parse(content)
@@ -151,7 +175,7 @@ async function generateAiReport(url: string, notes: string): Promise<CoachingRep
     status: 'complete',
     mode: 'ai',
     summary: parsed.summary ?? 'AI report generated.',
-    scoreline: parsed.scoreline ?? 'Not provided',
+    scoreline: parsed.scoreline ?? formatScore(matchContext),
     keyInsights: Array.isArray(parsed.keyInsights) ? parsed.keyInsights : [],
     trainingFocus: Array.isArray(parsed.trainingFocus) ? parsed.trainingFocus : [],
     timeline: Array.isArray(parsed.timeline) ? parsed.timeline : [],
@@ -164,6 +188,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as AnalyseRequest
     const url = body.url?.trim()
     const notes = body.notes?.trim() ?? ''
+    const matchContext = body.matchContext
 
     if (!url) {
       return NextResponse.json({ error: 'Match URL is required.' }, { status: 400 })
@@ -176,7 +201,7 @@ export async function POST(request: Request) {
       )
     }
 
-    const report = await generateAiReport(url, notes)
+    const report = await generateAiReport(url, notes, matchContext)
 
     return NextResponse.json(report)
   } catch {
