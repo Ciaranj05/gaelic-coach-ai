@@ -52,10 +52,21 @@ function downloadReport(report: Report) {
 
 export default function YouTubeAnalyser() {
   const [url, setUrl] = useState('')
+  const [teamA, setTeamA] = useState('')
+  const [teamB, setTeamB] = useState('')
+  const [coachedTeam, setCoachedTeam] = useState('')
+  const [teamAColour, setTeamAColour] = useState('')
+  const [teamBColour, setTeamBColour] = useState('')
+  const [scoreline, setScoreline] = useState('')
+  const [competition, setCompetition] = useState('')
   const [notes, setNotes] = useState('')
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState('')
   const [report, setReport] = useState<Report | null>(null)
+
+  const requiredFieldsComplete = Boolean(
+    url && teamA && teamB && coachedTeam && teamAColour && teamBColour && scoreline
+  )
 
   async function analyse() {
     setError('')
@@ -67,13 +78,29 @@ export default function YouTubeAnalyser() {
       return
     }
 
+    if (!requiredFieldsComplete) {
+      setStatus('error')
+      setError('Please complete the required match context: teams, coached team, colours and scoreline.')
+      return
+    }
+
     setStatus('processing')
+
+    const matchContext = {
+      teamA,
+      teamB,
+      coachedTeam,
+      teamAColour,
+      teamBColour,
+      scoreline,
+      competition
+    }
 
     try {
       const response = await fetch('/api/analyse-link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, notes })
+        body: JSON.stringify({ url, notes, matchContext })
       })
 
       const data = await response.json()
@@ -97,105 +124,161 @@ export default function YouTubeAnalyser() {
   const coachActions = report?.nextSteps.slice(0, 3) ?? []
 
   return (
-    <div className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-6 shadow-2xl shadow-green-950/20 backdrop-blur">
-      <p className="text-xl font-semibold">Analyse a match link</p>
-      <p className="mt-2 text-sm text-zinc-400">
-        Paste a YouTube, Vimeo or Veo link. Add match notes for a stronger AI report.
+    <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-2xl shadow-slate-200/70">
+      <p className="text-xl font-bold text-slate-950">Analyse a match link</p>
+      <p className="mt-2 text-sm text-slate-500">
+        Add the match context first so the AI can produce a more specific, trustworthy coaching report.
       </p>
 
-      <div className="mt-6 space-y-3">
+      <div className="mt-6 space-y-4">
         <input
           value={url}
           onChange={(event) => setUrl(event.target.value)}
-          placeholder="https://youtube.com/watch?v=..."
-          className="w-full rounded-2xl border border-white/10 bg-black/50 px-4 py-4 text-white outline-none placeholder:text-zinc-600 focus:border-green-400/60"
+          placeholder="YouTube, Vimeo or Veo match link"
+          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
         />
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <input
+            value={teamA}
+            onChange={(event) => setTeamA(event.target.value)}
+            placeholder="Team A name *"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+          />
+          <input
+            value={teamB}
+            onChange={(event) => setTeamB(event.target.value)}
+            placeholder="Team B name *"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+          />
+          <input
+            value={teamAColour}
+            onChange={(event) => setTeamAColour(event.target.value)}
+            placeholder="Team A colours *"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+          />
+          <input
+            value={teamBColour}
+            onChange={(event) => setTeamBColour(event.target.value)}
+            placeholder="Team B colours *"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+          />
+        </div>
+
+        <select
+          value={coachedTeam}
+          onChange={(event) => setCoachedTeam(event.target.value)}
+          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-slate-950 outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+        >
+          <option value="">Which team are you coaching? *</option>
+          {teamA ? <option value={teamA}>{teamA}</option> : null}
+          {teamB ? <option value={teamB}>{teamB}</option> : null}
+        </select>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <input
+            value={scoreline}
+            onChange={(event) => setScoreline(event.target.value)}
+            placeholder="Final scoreline * e.g. Team A 1-12, Team B 1-15"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+          />
+          <input
+            value={competition}
+            onChange={(event) => setCompetition(event.target.value)}
+            placeholder="Competition / match type"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+          />
+        </div>
 
         <textarea
           value={notes}
           onChange={(event) => setNotes(event.target.value)}
-          placeholder="Optional: add score, key moments, timestamps, team notes, or copied transcript. Example: 12 mins turnover conceded, 18 mins goal chance, second half kickouts struggled."
-          rows={5}
-          className="w-full rounded-2xl border border-white/10 bg-black/50 px-4 py-4 text-white outline-none placeholder:text-zinc-600 focus:border-green-400/60"
+          placeholder="Optional coach notes: key moments, timestamps, tactical focus, injuries, conditions, or areas you want reviewed."
+          rows={4}
+          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
         />
 
         <button
           onClick={analyse}
-          disabled={!url || status === 'processing'}
-          className="w-full rounded-2xl bg-green-400 px-6 py-4 font-semibold text-black transition hover:bg-green-300 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={!requiredFieldsComplete || status === 'processing'}
+          className="w-full rounded-2xl bg-emerald-600 px-6 py-4 font-bold text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {status === 'processing' ? 'Generating analysis...' : 'Generate AI Match Report'}
         </button>
+
+        <p className="text-center text-xs text-slate-500">
+          Required: teams, colours, coached team and scoreline. This improves report accuracy and reduces generic AI output.
+        </p>
       </div>
 
       {status === 'error' ? (
-        <div className="mt-5 rounded-2xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-300">
+        <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
           {error}
         </div>
       ) : null}
 
       {status === 'processing' ? (
-        <div className="mt-6 rounded-2xl bg-green-400/10 p-5 text-sm text-green-300">
-          Calling the analysis API and preparing a structured coaching report...
+        <div className="mt-6 rounded-2xl bg-emerald-50 p-5 text-sm font-medium text-emerald-700">
+          Analysing match context, transcript, sampled frames and coaching inputs...
         </div>
       ) : null}
 
       {status === 'complete' && report ? (
-        <div className="mt-6 space-y-6 rounded-3xl border border-white/10 bg-black/40 p-5">
+        <div className="mt-6 space-y-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h3 className="text-2xl font-bold">Match Report</h3>
-              <p className="mt-1 text-xs uppercase tracking-wide text-green-300">
+              <h3 className="text-2xl font-bold text-slate-950">Match Report</h3>
+              <p className="mt-1 text-xs uppercase tracking-wide text-emerald-600">
                 {report.mode === 'worker' ? 'Railway AI worker' : report.mode === 'ai' ? 'AI generated' : 'Demo mode'}
               </p>
             </div>
 
             <button
               onClick={() => downloadReport(report)}
-              className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200"
+              className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
             >
               Download Full Report
             </button>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-2xl bg-white/5 p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Scoreline</p>
-              <p className="mt-2 text-sm font-semibold text-white">{report.scoreline}</p>
+            <div className="rounded-2xl bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Scoreline</p>
+              <p className="mt-2 text-sm font-semibold text-slate-950">{report.scoreline}</p>
             </div>
-            <div className="rounded-2xl bg-white/5 p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Insights</p>
-              <p className="mt-2 text-sm font-semibold text-white">{report.keyInsights.length} themes found</p>
+            <div className="rounded-2xl bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Insights</p>
+              <p className="mt-2 text-sm font-semibold text-slate-950">{report.keyInsights.length} themes found</p>
             </div>
-            <div className="rounded-2xl bg-white/5 p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Training</p>
-              <p className="mt-2 text-sm font-semibold text-white">{report.trainingFocus.length} priorities</p>
+            <div className="rounded-2xl bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Training</p>
+              <p className="mt-2 text-sm font-semibold text-slate-950">{report.trainingFocus.length} priorities</p>
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white/5 p-5">
-            <h4 className="text-lg font-semibold text-white">Executive Summary</h4>
-            <p className="mt-3 text-sm leading-7 text-zinc-300">{report.summary}</p>
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            <h4 className="text-lg font-semibold text-slate-950">Executive Summary</h4>
+            <p className="mt-3 text-sm leading-7 text-slate-600">{report.summary}</p>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-2xl border border-white/10 bg-black/40 p-5">
-              <h4 className="font-semibold text-white">Key Tactical Themes</h4>
-              <ul className="mt-4 space-y-3 text-sm text-zinc-300">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h4 className="font-semibold text-slate-950">Key Tactical Themes</h4>
+              <ul className="mt-4 space-y-3 text-sm text-slate-600">
                 {tacticalThemes.map((item, index) => (
-                  <li key={item} className="rounded-2xl bg-white/5 p-4 leading-6">
-                    <span className="mr-2 text-green-300">{index + 1}.</span>{item}
+                  <li key={item} className="rounded-2xl bg-slate-50 p-4 leading-6">
+                    <span className="mr-2 font-bold text-emerald-600">{index + 1}.</span>{item}
                   </li>
                 ))}
               </ul>
             </div>
 
-            <div className="rounded-2xl border border-green-400/10 bg-green-400/5 p-5">
-              <h4 className="font-semibold text-white">Training Priorities</h4>
-              <ul className="mt-4 space-y-3 text-sm text-green-200">
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
+              <h4 className="font-semibold text-slate-950">Training Priorities</h4>
+              <ul className="mt-4 space-y-3 text-sm text-emerald-800">
                 {trainingPriorities.map((item, index) => (
-                  <li key={item} className="rounded-2xl bg-green-400/10 p-4 leading-6">
-                    <span className="mr-2 text-green-300">{index + 1}.</span>{item}
+                  <li key={item} className="rounded-2xl bg-white/70 p-4 leading-6">
+                    <span className="mr-2 font-bold text-emerald-600">{index + 1}.</span>{item}
                   </li>
                 ))}
               </ul>
@@ -203,22 +286,22 @@ export default function YouTubeAnalyser() {
           </div>
 
           {coachActions.length ? (
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-              <h4 className="font-semibold text-white">Recommended Coach Actions</h4>
-              <ul className="mt-4 grid gap-3 text-sm text-zinc-300 md:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h4 className="font-semibold text-slate-950">Recommended Coach Actions</h4>
+              <ul className="mt-4 grid gap-3 text-sm text-slate-600 md:grid-cols-3">
                 {coachActions.map((item) => (
-                  <li key={item} className="rounded-2xl bg-black/40 p-4 leading-6">{item}</li>
+                  <li key={item} className="rounded-2xl bg-slate-50 p-4 leading-6">{item}</li>
                 ))}
               </ul>
             </div>
           ) : null}
 
           {report.rawAnalysis ? (
-            <details className="rounded-2xl border border-white/10 bg-black/60 p-5">
-              <summary className="cursor-pointer font-semibold text-white">
+            <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <summary className="cursor-pointer font-semibold text-slate-950">
                 View Full Coaching Report
               </summary>
-              <pre className="mt-4 max-h-[520px] whitespace-pre-wrap overflow-auto text-sm leading-7 text-zinc-300">
+              <pre className="mt-4 max-h-[520px] whitespace-pre-wrap overflow-auto text-sm leading-7 text-slate-600">
                 {report.rawAnalysis}
               </pre>
             </details>
