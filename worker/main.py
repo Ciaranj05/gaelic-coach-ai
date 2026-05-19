@@ -143,7 +143,7 @@ This report is FOR the coaching group of {coached_team}.
 The entire analysis should be biased toward helping {coached_team} improve.
 
 Create a short manager debrief. Do not write an essay.
-The report must compare the two teams, identify the match-deciding factor, and give three sharp coaching priorities specifically designed to help {coached_team} improve.
+The report must compare the two teams, include an estimated key stats table, identify the match-deciding factor, and give three sharp coaching priorities specifically designed to help {coached_team} improve.
 
 MATCH FACTS:
 {match_facts}
@@ -166,6 +166,8 @@ STRICT RULES:
 - Use actual team names throughout.
 - Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
 - Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
+- Estimated stats must be labelled as estimated and should be plausible from the scoreline/context, not fake precision.
+- Use ranges or labels where exact numbers are not reliable, for example “High”, “Low”, “50–55% estimated”, “Strong”, “Limited”.
 - Focus primarily on {coached_team}: their strengths, weaknesses, tactical issues and coaching opportunities.
 - The opposition analysis should only exist to explain what hurt or exposed {coached_team}.
 - Main Focus Areas must be practical, tactical and directly useful for {coached_team} training sessions.
@@ -187,6 +189,20 @@ Return this exact markdown structure and nothing else:
 
 # {coached_team} – Match-Deciding Factor
 One blunt paragraph, maximum 45 words. Explain the one factor that most shaped the result for {coached_team}.
+
+# {coached_team} – Estimated Key Match Stats
+| Metric | {coached_team} | {opposition_team} |
+|---|---|---|
+| Possession | estimated range/label + ✅/⚠️/❌ | estimated range/label + ✅/⚠️/❌ |
+| Shot Creation | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
+| Goal Threat | {match_facts['coachedGoals']} goals + tactical label + ✅/⚠️/❌ | {match_facts['oppositionGoals']} goals + tactical label + ✅/⚠️/❌ |
+| Point Output | {match_facts['coachedPoints']} points + tactical label + ✅/⚠️/❌ | {match_facts['oppositionPoints']} points + tactical label + ✅/⚠️/❌ |
+| Transition Scores | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
+| Turnovers Conceded | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
+| Scores From Turnovers | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
+| Kickout / Restart Retention | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
+| Breaking Ball | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
+| Defensive Scores Conceded | based on opponent total + tactical label + ✅/⚠️/❌ | based on opponent total + tactical label + ✅/⚠️/❌ |
 
 # {coached_team} – Tactical Comparison
 | Area | {coached_team} | {opposition_team} |
@@ -216,7 +232,7 @@ One short quote, maximum 55 words. Make it direct, honest and tactical. It shoul
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports focused on helping the coached team improve through scoreline-aware tactical insights and actionable coaching priorities.'},
+            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports focused on helping the coached team improve through scoreline-aware tactical insights, estimated key stats and actionable coaching priorities.'},
             {'role': 'user', 'content': prompt}
         ]
     )
