@@ -17,13 +17,16 @@ class AnalyseRequest(BaseModel):
 jobs = {}
 EVENT_TYPES = ['kickout_restart','turnover','fast_transition','scoring_chance','score_or_restart_after_score','defensive_setup','breaking_ball','slow_possession','game_management','not_useful']
 SCORE_OUTCOMES = ['point','goal','wide','save','blocked','unknown']
+KICKOUT_OUTCOMES = ['short_retained','won_clean','won_breaking_ball','lost_clean','lost_breaking_ball','pressed_into_turnover','contested_unknown','not_kickout','unknown']
+POSSESSION_OUTCOMES = ['retained','lost','won_back','turnover_for','turnover_against','unclear']
+TRANSITION_OUTCOMES = ['created_score','created_chance','carried_to_scoring_zone','slowed_down','forced_backwards','turned_over','conceded_counter','not_transition','unknown']
 PROGRESS_STAGES = {
     'queued': {'percent': 5, 'label': 'Queued for analysis'},
     'metadata': {'percent': 12, 'label': 'Reading match metadata'},
     'download': {'percent': 22, 'label': 'Downloading match video'},
     'full_match_scan': {'percent': 38, 'label': 'Scanning full match frames'},
     'event_selection': {'percent': 55, 'label': 'Selecting key review moments'},
-    'event_analysis': {'percent': 72, 'label': 'Classifying tactical events, team colours and score outcomes'},
+    'event_analysis': {'percent': 72, 'label': 'Classifying kickouts, possession, transitions and scores'},
     'clip_extraction': {'percent': 82, 'label': 'Creating review clips'},
     'report': {'percent': 92, 'label': 'Building Gaelic football report'},
     'complete': {'percent': 100, 'label': 'Report ready'},
@@ -31,8 +34,7 @@ PROGRESS_STAGES = {
 }
 
 @app.get('/')
-def health():
-    return {'status': 'running', 'service': 'gaelic-coach-ai-worker'}
+def health(): return {'status': 'running', 'service': 'gaelic-coach-ai-worker'}
 
 @app.get('/openai-status')
 def openai_status():
@@ -102,22 +104,29 @@ def build_scoreline_rules(f):
     if f['coachedTeamResult']=='lost' and f['margin']<=3: rules.append(f'{t} lost narrowly; focus on small swing factors and late-game decisions.')
     return '\n'.join('- '+r for r in rules) or '- Apply normal Gaelic football scoreline reasoning.'
 
+def norm_choice(value, allowed, default='unknown'):
+    return value if value in allowed else default
+
 def norm_scoreboard(raw):
     raw = raw if isinstance(raw, dict) else {}
-    return {'visible':bool(raw.get('visible',False)),'text':str(raw.get('text',''))[:160],'scoreChangeLikely':bool(raw.get('scoreChangeLikely',False)),'possibleScoreEvent':bool(raw.get('possibleScoreEvent',False)),'confidence':raw.get('confidence','low') if raw.get('confidence') in ['low','medium','high'] else 'low','ocrText':str(raw.get('ocrText',''))[:160],'ocrZones':raw.get('ocrZones',[]) if isinstance(raw.get('ocrZones',[]),list) else []}
+    return {'visible':bool(raw.get('visible',False)),'text':str(raw.get('text',''))[:160],'scoreChangeLikely':bool(raw.get('scoreChangeLikely',False)),'possibleScoreEvent':bool(raw.get('possibleScoreEvent',False)),'confidence':norm_choice(raw.get('confidence'),['low','medium','high'],'low'),'ocrText':str(raw.get('ocrText',''))[:160],'ocrZones':raw.get('ocrZones',[]) if isinstance(raw.get('ocrZones',[]),list) else []}
 
 def norm_score_outcome(raw):
     raw = raw if isinstance(raw, dict) else {}; cues = raw.get('cues',{}) if isinstance(raw.get('cues',{}),dict) else {}
-    return {'outcome': raw.get('outcome') if raw.get('outcome') in SCORE_OUTCOMES else 'unknown','confidence': raw.get('confidence') if raw.get('confidence') in ['low','medium','high'] else 'low','evidence': (raw.get('evidence',[]) if isinstance(raw.get('evidence',[]),list) else [])[:8],'reasoning': str(raw.get('reasoning',''))[:300],'cues': {'scoreboardChange':bool(cues.get('scoreboardChange',False)),'umpireSignal':str(cues.get('umpireSignal','not_visible'))[:80],'ballPath':str(cues.get('ballPath','unclear'))[:80],'netMovement':bool(cues.get('netMovement',False)),'goalkeeperRetrieval':bool(cues.get('goalkeeperRetrieval',False)),'goalkeeperRestart':bool(cues.get('goalkeeperRestart',False)),'playerReaction':str(cues.get('playerReaction','unclear'))[:120],'cameraReset':bool(cues.get('cameraReset',False)),'crowdReaction':str(cues.get('crowdReaction','not_available'))[:80]}}
+    return {'outcome': norm_choice(raw.get('outcome'), SCORE_OUTCOMES),'confidence': norm_choice(raw.get('confidence'), ['low','medium','high'],'low'),'evidence': (raw.get('evidence',[]) if isinstance(raw.get('evidence',[]),list) else [])[:8],'reasoning': str(raw.get('reasoning',''))[:300],'cues': {'scoreboardChange':bool(cues.get('scoreboardChange',False)),'umpireSignal':str(cues.get('umpireSignal','not_visible'))[:80],'ballPath':str(cues.get('ballPath','unclear'))[:80],'netMovement':bool(cues.get('netMovement',False)),'goalkeeperRetrieval':bool(cues.get('goalkeeperRetrieval',False)),'goalkeeperRestart':bool(cues.get('goalkeeperRestart',False)),'playerReaction':str(cues.get('playerReaction','unclear'))[:120],'cameraReset':bool(cues.get('cameraReset',False)),'crowdReaction':str(cues.get('crowdReaction','not_available'))[:80]}}
 
 def norm_team_colours(raw, facts):
     raw = raw if isinstance(raw, dict) else {}
-    return {'teamA': facts['teamA'], 'teamB': facts['teamB'], 'coachedTeam': facts['coachedTeam'], 'teamAColour': str(raw.get('teamAColour','unknown'))[:80], 'teamBColour': str(raw.get('teamBColour','unknown'))[:80], 'coachedTeamColour': str(raw.get('coachedTeamColour','unknown'))[:80], 'oppositionColour': str(raw.get('oppositionColour','unknown'))[:80], 'confidence': raw.get('confidence','low') if raw.get('confidence') in ['low','medium','high'] else 'low', 'visibleKits': raw.get('visibleKits',[]) if isinstance(raw.get('visibleKits',[]),list) else [], 'reasoning': str(raw.get('reasoning',''))[:300]}
+    return {'teamA': facts['teamA'], 'teamB': facts['teamB'], 'coachedTeam': facts['coachedTeam'], 'teamAColour': str(raw.get('teamAColour','unknown'))[:80], 'teamBColour': str(raw.get('teamBColour','unknown'))[:80], 'coachedTeamColour': str(raw.get('coachedTeamColour','unknown'))[:80], 'oppositionColour': str(raw.get('oppositionColour','unknown'))[:80], 'confidence': norm_choice(raw.get('confidence'),['low','medium','high'],'low'), 'visibleKits': raw.get('visibleKits',[]) if isinstance(raw.get('visibleKits',[]),list) else [], 'reasoning': str(raw.get('reasoning',''))[:300]}
+
+def norm_match_intel(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    return {'kickoutOutcome': norm_choice(raw.get('kickoutOutcome'), KICKOUT_OUTCOMES), 'kickoutTeam': str(raw.get('kickoutTeam','unknown'))[:120], 'possessionStart': str(raw.get('possessionStart','unknown'))[:120], 'possessionEnd': str(raw.get('possessionEnd','unknown'))[:120], 'possessionOutcome': norm_choice(raw.get('possessionOutcome'), POSSESSION_OUTCOMES, 'unclear'), 'turnoverTeam': str(raw.get('turnoverTeam','unknown'))[:120], 'transitionOutcome': norm_choice(raw.get('transitionOutcome'), TRANSITION_OUTCOMES), 'transitionTeam': str(raw.get('transitionTeam','unknown'))[:120], 'confidence': norm_choice(raw.get('confidence'), ['low','medium','high'], 'low'), 'evidence': (raw.get('evidence',[]) if isinstance(raw.get('evidence',[]),list) else [])[:8], 'coachingValue': norm_choice(raw.get('coachingValue'), ['low','medium','high'], 'medium'), 'timelineGroup': norm_choice(raw.get('timelineGroup'), ['scores','wides','kickouts','turnovers','transitions','defence','possession','other'], 'other')}
 
 def fallback_event_candidates(metadata):
     duration=int(metadata.get('duration') or 0); times=[360,1080,2160,3240] if duration<=0 else [int(duration*f) for f in [0.12,0.25,0.38,0.52,0.68,0.82]]
     labels=['kickout_restart','fast_transition','scoring_chance','breaking_ball','defensive_setup','game_management']
-    return [{'time':f'{format_timestamp(s)} approx','startSecond':max(0,s-15),'endSecond':s+15,'type':labels[i%len(labels)],'reason':'Fallback checkpoint selected from match timeline.','confidence':'low','scoreOutcome':norm_score_outcome({})} for i,s in enumerate(times)]
+    return [{'time':f'{format_timestamp(s)} approx','startSecond':max(0,s-15),'endSecond':s+15,'type':labels[i%len(labels)],'reason':'Fallback checkpoint selected from match timeline.','confidence':'low','scoreOutcome':norm_score_outcome({}),'matchIntelligence':norm_match_intel({})} for i,s in enumerate(times)]
 
 def download_match_video(url,tmpdir,profile):
     path=os.path.join(tmpdir,'match.mp4')
@@ -176,8 +185,7 @@ def extract_event_clip(video_path,event,job_id,event_index):
 def detect_team_colours(client, frame_paths, facts):
     if not frame_paths: return norm_team_colours({}, facts)
     content=[{'type':'text','text':f'''Detect the two main team kit colours in this Gaelic football footage. Team A: {facts['teamA']}. Team B: {facts['teamB']}. Coached team: {facts['coachedTeam']}.
-Return JSON only: {{"teamAColour":"colour or unknown","teamBColour":"colour or unknown","coachedTeamColour":"colour or unknown","oppositionColour":"colour or unknown","visibleKits":["colour 1","colour 2"],"confidence":"low|medium|high","reasoning":"short reason"}}.
-Use coach notes/team names only if the footage supports it. If you cannot map colours to teams, list visibleKits but keep team colours unknown.'''}]
+Return JSON only: {{"teamAColour":"colour or unknown","teamBColour":"colour or unknown","coachedTeamColour":"colour or unknown","oppositionColour":"colour or unknown","visibleKits":["colour 1","colour 2"],"confidence":"low|medium|high","reasoning":"short reason"}}. If you cannot map colours to team names, keep team colours unknown but list visibleKits.'''}]
     content += image_content_from_paths(frame_paths[:6])
     res=client.chat.completions.create(model='gpt-4o-mini',response_format={'type':'json_object'},messages=[{'role':'user','content':content}])
     return norm_team_colours(parse_json_safely(res.choices[0].message.content or '{}') or {}, facts)
@@ -189,22 +197,31 @@ def read_scoreboard_ocr(client,crops):
     p=parse_json_safely(res.choices[0].message.content or '{}') or {}
     return norm_scoreboard({'visible':p.get('visible'),'ocrText':p.get('ocrText',''),'text':p.get('ocrText',''),'ocrZones':p.get('ocrZones',[]),'confidence':p.get('confidence','low')})
 
-def classify_event_frames(client, frame_paths, event, scoreboard_ocr, team_colours):
+def classify_event_frames(client, frame_paths, event, scoreboard_ocr, team_colours, facts):
     if not frame_paths:
-        return {'eventType':event.get('type','not_useful'),'confidence':'low','coachingValue':'low','keepForReport':False,'visibleCues':[],'coachingReason':'No frames available.','visualSummary':'','scoreboard':scoreboard_ocr,'scoreOutcome':norm_score_outcome({}),'teamColours':team_colours}
+        return {'eventType':event.get('type','not_useful'),'confidence':'low','coachingValue':'low','keepForReport':False,'visibleCues':[],'coachingReason':'No frames available.','visualSummary':'','scoreboard':scoreboard_ocr,'scoreOutcome':norm_score_outcome({}),'teamColours':team_colours,'matchIntelligence':norm_match_intel({})}
     content=[{'type':'text','text':f'''Classify this Gaelic football review window using only visible evidence.
 Candidate: {event.get('time')} / {event.get('type')}
+Teams: {facts['teamA']} vs {facts['teamB']}. Coached team: {facts['coachedTeam']}.
 Scoreboard OCR: {scoreboard_ocr}
 Team colour evidence: {team_colours}
-Return JSON only with: eventType(one of {EVENT_TYPES}), confidence(low|medium|high), coachingValue(low|medium|high), keepForReport(boolean), visibleCues(array), coachingReason, visualSummary, scoreboard object, scoreOutcome object, possessionColour("colour|unknown"), likelyTeamInPossession("team name|unknown").
-scoreOutcome.outcome must be one of {SCORE_OUTCOMES}. Only call point/goal with strong evidence; use unknown if unclear. Use team colour evidence conservatively; if not clear, say unknown.'''}]
+Return JSON only with keys:
+eventType(one of {EVENT_TYPES}), confidence(low|medium|high), coachingValue(low|medium|high), keepForReport(boolean), visibleCues(array), coachingReason, visualSummary,
+scoreboard object,
+scoreOutcome: {{outcome(one of {SCORE_OUTCOMES}), confidence, evidence, reasoning, cues}},
+matchIntelligence: {{kickoutOutcome(one of {KICKOUT_OUTCOMES}), kickoutTeam(team/unknown), possessionStart(team/colour/unknown), possessionEnd(team/colour/unknown), possessionOutcome(one of {POSSESSION_OUTCOMES}), turnoverTeam(team/unknown), transitionOutcome(one of {TRANSITION_OUTCOMES}), transitionTeam(team/unknown), confidence(low|medium|high), evidence(array), coachingValue(low|medium|high), timelineGroup(scores|wides|kickouts|turnovers|transitions|defence|possession|other)}},
+possessionColour("colour|unknown"), likelyTeamInPossession("team name|unknown").
+Rules: be conservative. Only assign team ownership if colour evidence and frames support it. Kickout won/lost means the team taking the kickout retained/lost the next phase. Breaking ball means aerial/scrappy second possession. Transition success means the attack clearly creates a chance, reaches scoring zone, slows, is forced back, or turns over. Use unknown if unclear.'''}]
     content += image_content_from_paths(frame_paths)
     res=client.chat.completions.create(model='gpt-4o-mini',response_format={'type':'json_object'},messages=[{'role':'user','content':content}])
-    p=parse_json_safely(res.choices[0].message.content or '{}') or {}; sb=norm_scoreboard({**scoreboard_ocr, **(p.get('scoreboard',{}) if isinstance(p.get('scoreboard'),dict) else {})}); so=norm_score_outcome(p.get('scoreOutcome',{}))
+    p=parse_json_safely(res.choices[0].message.content or '{}') or {}
+    sb=norm_scoreboard({**scoreboard_ocr, **(p.get('scoreboard',{}) if isinstance(p.get('scoreboard'),dict) else {})}); so=norm_score_outcome(p.get('scoreOutcome',{})); mi=norm_match_intel(p.get('matchIntelligence',{}))
     et=p.get('eventType') if p.get('eventType') in EVENT_TYPES else event.get('type','not_useful')
     if so['outcome'] in ['point','goal','wide'] or sb['possibleScoreEvent']:
         if et not in ['scoring_chance','score_or_restart_after_score']: et='score_or_restart_after_score'
-    return {'eventType':et,'confidence':p.get('confidence','low'),'coachingValue':p.get('coachingValue','medium'),'keepForReport':bool(p.get('keepForReport',et!='not_useful')),'visibleCues':p.get('visibleCues',[]) if isinstance(p.get('visibleCues',[]),list) else [],'coachingReason':p.get('coachingReason',''),'visualSummary':p.get('visualSummary',''),'scoreboard':sb,'scoreOutcome':so,'teamColours':team_colours,'possessionColour':str(p.get('possessionColour','unknown'))[:80],'likelyTeamInPossession':str(p.get('likelyTeamInPossession','unknown'))[:120]}
+    if mi['kickoutOutcome'] not in ['not_kickout','unknown'] and et == 'not_useful': et='kickout_restart'
+    if mi['possessionOutcome'] in ['turnover_for','turnover_against'] and et == 'not_useful': et='turnover'
+    return {'eventType':et,'confidence':p.get('confidence','low'),'coachingValue':p.get('coachingValue',mi.get('coachingValue','medium')),'keepForReport':bool(p.get('keepForReport',et!='not_useful')),'visibleCues':p.get('visibleCues',[]) if isinstance(p.get('visibleCues',[]),list) else [],'coachingReason':p.get('coachingReason',''),'visualSummary':p.get('visualSummary',''),'scoreboard':sb,'scoreOutcome':so,'teamColours':team_colours,'matchIntelligence':mi,'possessionColour':str(p.get('possessionColour','unknown'))[:80],'likelyTeamInPossession':str(p.get('likelyTeamInPossession','unknown'))[:120]}
 
 def build_event_candidates(url, metadata, profile, client=None, job_id=None, facts=None):
     try:
@@ -214,31 +231,46 @@ def build_event_candidates(url, metadata, profile, client=None, job_id=None, fac
             set_job_stage(job_id,'full_match_scan','Extracting low-res scan frames and comparing movement changes'); diffs=scan_video_frame_differences(video_path,profile)
             set_job_stage(job_id,'event_selection','Selecting strongest candidate review windows'); candidates=select_event_candidates_from_differences(diffs) or fallback_event_candidates(metadata)
             if not client: return candidates
-            set_job_stage(job_id,'event_analysis','Detecting team colours, score outcomes and tactical event types')
-            enriched=[]; clip_count=int(profile.get('clipCount',6)); first_frames=[]
+            set_job_stage(job_id,'event_analysis','Detecting team colours, kickouts, possession, transitions and score outcomes')
+            enriched=[]; clip_count=int(profile.get('clipCount',6)); first_frames=[]; facts=facts or build_match_facts({}); cached_colours=None
             for i,event in enumerate(candidates[:clip_count], start=1):
                 frames=extract_event_frames(video_path,event,tmpdir,i,profile)
                 if frames and len(first_frames)<8: first_frames += frames[:2]
-                team_colours=detect_team_colours(client, first_frames or frames, facts or build_match_facts({}))
+                if not cached_colours or cached_colours.get('confidence') == 'low': cached_colours=detect_team_colours(client, first_frames or frames, facts)
                 scoreboard_ocr=read_scoreboard_ocr(client, extract_scoreboard_crops(video_path,event,tmpdir,i))
-                classification=classify_event_frames(client,frames,event,scoreboard_ocr,team_colours)
+                classification=classify_event_frames(client,frames,event,scoreboard_ocr,cached_colours,facts)
                 if not classification.get('keepForReport') and classification.get('coachingValue')=='low': continue
                 et=classification.get('eventType',event.get('type')); clip=extract_event_clip(video_path,{**event,'type':et},job_id,i)
-                enriched.append({**event,'type':et,'classification':classification,'visualAnalysis':classification.get('visualSummary',''),'scoreboard':classification.get('scoreboard'),'scoreOutcome':classification.get('scoreOutcome'),'teamColours':classification.get('teamColours'),'possessionColour':classification.get('possessionColour'),'likelyTeamInPossession':classification.get('likelyTeamInPossession'),'framesAnalysed':len(frames),'clip':clip})
+                enriched.append({**event,'type':et,'classification':classification,'visualAnalysis':classification.get('visualSummary',''),'scoreboard':classification.get('scoreboard'),'scoreOutcome':classification.get('scoreOutcome'),'teamColours':classification.get('teamColours'),'matchIntelligence':classification.get('matchIntelligence'),'possessionColour':classification.get('possessionColour'),'likelyTeamInPossession':classification.get('likelyTeamInPossession'),'framesAnalysed':len(frames),'clip':clip})
             return enriched + candidates[clip_count:]
     except Exception:
         return fallback_event_candidates(metadata)
 
-def build_report_prompt(coached, opposition, facts, rules, metadata, events, notes, profile):
+def build_timeline(events):
+    groups={k:[] for k in ['scores','wides','kickouts','turnovers','transitions','defence','possession','other']}
+    for e in events:
+        if not isinstance(e,dict): continue
+        so=e.get('scoreOutcome',{}) or {}; mi=e.get('matchIntelligence',{}) or {}; group=mi.get('timelineGroup','other')
+        if so.get('outcome') in ['point','goal']: group='scores'
+        elif so.get('outcome')=='wide': group='wides'
+        elif mi.get('kickoutOutcome') not in [None,'not_kickout','unknown']: group='kickouts'
+        elif mi.get('possessionOutcome') in ['turnover_for','turnover_against','lost','won_back']: group='turnovers'
+        elif mi.get('transitionOutcome') not in [None,'not_transition','unknown']: group='transitions'
+        item={'time':e.get('time'),'eventType':e.get('type'),'scoreOutcome':so.get('outcome','unknown'),'kickoutOutcome':mi.get('kickoutOutcome','unknown'),'possessionOutcome':mi.get('possessionOutcome','unclear'),'transitionOutcome':mi.get('transitionOutcome','unknown'),'teamCue':e.get('likelyTeamInPossession','unknown'),'summary':e.get('visualAnalysis',''),'clip':e.get('clip')}
+        groups[group if group in groups else 'other'].append(item)
+    return groups
+
+def build_report_prompt(coached, opposition, facts, rules, metadata, events, timeline, notes, profile):
     return f'''You are an elite Gaelic football performance analyst working directly for {coached}.
-Create a short Gaelic football manager debrief for {coached}. Use classified event evidence, team colour evidence, score outcome cues, OCR scoreboard reads and clips as approximate evidence.
+Create a short Gaelic football manager debrief for {coached}. Use classified event evidence, team colour evidence, score outcomes, kickout outcomes, possession/turnover outcomes, transition outcomes and clips as approximate evidence.
 MATCH FACTS: {facts}
 SCORELINE RULES: {rules}
 VIDEO METADATA: {metadata}
 CLASSIFIED EVENTS: {events}
+KEY MOMENTS TIMELINE: {timeline}
 COACH NOTES: {notes}
 PROFILE: {profile}
-Rules: This is Gaelic football. Use kickouts, breaking ball, middle third, runners from deep, direct ball inside, D protection, counter-press, kick-pass threat, shot selection, game management. Team colour evidence is approximate; never overclaim possession if unclear. Never contradict final scoreline or invent scorers.
+Rules: This is Gaelic football. Use kickouts, breaking ball, middle third, runners from deep, direct ball inside, D protection, counter-press, kick-pass threat, shot selection, game management. Team colour and possession evidence is approximate; never overclaim ownership if unclear. Never contradict final scoreline or invent scorers.
 Return this exact markdown structure:
 # {coached} – Match Snapshot
 | Item | Detail |
@@ -254,28 +286,34 @@ One blunt Gaelic football paragraph, max 45 words.
 | Metric | {coached} | {opposition} |
 |---|---|---|
 | Possession | estimated range/label + colour/phase evidence if available + ✅/⚠️/❌ | estimated range/label + colour/phase evidence if available + ✅/⚠️/❌ |
-| Shot Creation | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Shot Creation | estimated label + observation + ✅/⚠️/❌ | estimated label + observation + ✅/⚠️/❌ |
 | Goal Threat | {facts['coachedGoals']} goals + tactical label + ✅/⚠️/❌ | {facts['oppositionGoals']} goals + tactical label + ✅/⚠️/❌ |
 | Point Output | {facts['coachedPoints']} points + tactical label + ✅/⚠️/❌ | {facts['oppositionPoints']} points + tactical label + ✅/⚠️/❌ |
 | Scoring Bursts | use score outcome cues if available | use score outcome cues if available |
-| Kickout / Restart Retention | estimated label + colour evidence if available + ✅/⚠️/❌ | estimated label + colour evidence if available + ✅/⚠️/❌ |
-| Breaking Ball | estimated label + observation + ✅/⚠️/❌ | estimated label + observation + ✅/⚠️/❌ |
+| Kickout / Restart Retention | use kickout outcomes and colour evidence + ✅/⚠️/❌ | use kickout outcomes and colour evidence + ✅/⚠️/❌ |
+| Breaking Ball | use breaking-ball/kickout cues + ✅/⚠️/❌ | use breaking-ball/kickout cues + ✅/⚠️/❌ |
+| Turnover Impact | use possession/turnover classifier + ✅/⚠️/❌ | use possession/turnover classifier + ✅/⚠️/❌ |
 
 # {coached} – Tactical Comparison
 | Area | {coached} | {opposition} |
 |---|---|---|
-| Transition Through Middle Third | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
+| Transition Through Middle Third | use transition outcomes + ✅/⚠️/❌ | use transition outcomes + ✅/⚠️/❌ |
 | Direct Ball Inside | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
 | Kick-Pass Threat | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
 | Shot Selection | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
-| Turnovers / Counter-Press | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
-| Kickout Platform | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
+| Turnovers / Counter-Press | use turnover outcomes + ✅/⚠️/❌ | use turnover outcomes + ✅/⚠️/❌ |
+| Kickout Platform | use kickout outcomes + ✅/⚠️/❌ | use kickout outcomes + ✅/⚠️/❌ |
 | D Protection / Defensive Screen | observation + ✅/⚠️/❌ | observation + ✅/⚠️/❌ |
 
-# {coached} – Review Clips
-| Clip | Event Type | Score Outcome | Team / Colour Cue | Why Review It |
+# {coached} – Key Moments Timeline
+| Time | Category | Outcome | Team / Colour Cue | Why It Matters |
 |---|---|---|---|---|
-| Use available clip links from classified events | event type | point/goal/wide/save/blocked/unknown | team/colour cue or unknown | one specific coaching reason |
+| Use classified timeline moments | scores/wides/kickouts/turnovers/transitions | outcome | team/colour cue or unknown | specific coaching reason |
+
+# {coached} – Review Clips
+| Clip | Event Type | Score/Kickout/Transition Outcome | Team / Colour Cue | Why Review It |
+|---|---|---|---|---|
+| Use available clip links from classified events | event type | outcome | team/colour cue or unknown | one specific coaching reason |
 
 # {coached} – Main Focus Areas Going Forward
 | Priority | Why It Matters For {coached} | Coaching Action |
@@ -292,17 +330,20 @@ def generate_analysis(request, job_id=None):
     if not api_key: raise HTTPException(status_code=500, detail='OPENAI_API_KEY is missing')
     client=OpenAI(api_key=api_key); profile=processing_profile(request.url); facts=build_match_facts(request.matchContext or {})
     set_job_stage(job_id,'metadata','Reading video title, duration and match metadata'); metadata=extract_video_metadata(request.url)
-    events=build_event_candidates(request.url, metadata, profile, client, job_id, facts)
+    events=build_event_candidates(request.url, metadata, profile, client, job_id, facts); timeline=build_timeline(events)
     set_job_stage(job_id,'clip_extraction','Review clips created for selected moments')
     coached=facts['coachedTeam']; opposition=facts['teamB'] if facts['teamA']==coached else facts['teamA']
-    prompt=build_report_prompt(coached,opposition,facts,build_scoreline_rules(facts),metadata,events,request.notes,profile)
+    prompt=build_report_prompt(coached,opposition,facts,build_scoreline_rules(facts),metadata,events,timeline,request.notes,profile)
     set_job_stage(job_id,'report','Building final manager debrief report')
-    res=client.chat.completions.create(model='gpt-4o-mini',messages=[{'role':'system','content':'You produce concise Gaelic football manager debrief reports using classified event evidence, team colour evidence, score outcomes and scoreline-aware tactical insights.'},{'role':'user','content':prompt}])
+    res=client.chat.completions.create(model='gpt-4o-mini',messages=[{'role':'system','content':'You produce concise Gaelic football manager debrief reports using classified event evidence, team colour evidence, kickout outcomes, possession outcomes, transition outcomes and scoreline-aware tactical insights.'},{'role':'user','content':prompt}])
     clips=[e.get('clip') for e in events if isinstance(e,dict) and e.get('clip')]
     classifications=[e.get('classification') for e in events if isinstance(e,dict) and e.get('classification')]
     team_colours=[e.get('teamColours') for e in events if isinstance(e,dict) and e.get('teamColours')]
     scoring=[e for e in events if isinstance(e,dict) and e.get('scoreOutcome',{}).get('outcome')!='unknown']
-    return {'status':'complete','mode':'worker','analysis':res.choices[0].message.content,'videoMetadata':metadata,'matchFacts':facts,'processingProfile':profile['name'],'eventCandidates':events,'eventClassifications':classifications,'teamColours':team_colours,'scoringCues':scoring,'clips':clips}
+    kickouts=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('kickoutOutcome') not in [None,'not_kickout','unknown']]
+    turnovers=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('possessionOutcome') in ['turnover_for','turnover_against','lost','won_back']]
+    transitions=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('transitionOutcome') not in [None,'not_transition','unknown']]
+    return {'status':'complete','mode':'worker','analysis':res.choices[0].message.content,'videoMetadata':metadata,'matchFacts':facts,'processingProfile':profile['name'],'eventCandidates':events,'eventClassifications':classifications,'teamColours':team_colours,'scoringCues':scoring,'kickoutEvents':kickouts,'turnoverEvents':turnovers,'transitionEvents':transitions,'keyMomentsTimeline':timeline,'clips':clips}
 
 def run_analysis_job(job_id, request):
     try:
