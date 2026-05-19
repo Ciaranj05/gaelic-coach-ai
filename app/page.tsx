@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import UploadCard from '@/components/upload-card'
+import YouTubeAnalyser from '@/components/youtube-analyser'
 
 export default function HomePage() {
   return (
@@ -19,7 +20,7 @@ export default function HomePage() {
               </h1>
 
               <p className="mt-8 max-w-2xl text-lg leading-8 text-zinc-400">
-                Upload Gaelic football or hurling matches, generate AI reports, create training plans, and improve team performance faster.
+                Analyse Gaelic football and hurling matches using uploads or YouTube/Veo links.
               </p>
 
               <div className="mt-10 flex flex-wrap gap-4">
@@ -39,7 +40,10 @@ export default function HomePage() {
               </div>
             </div>
 
-            <UploadCard />
+            <div className="space-y-6">
+              <UploadCard />
+              <YouTubeAnalyser />
+            </div>
           </div>
         </div>
       </section>
@@ -54,9 +58,9 @@ export default function HomePage() {
           </div>
 
           <div className="rounded-[2rem] border border-white/10 bg-white/[0.05] p-8">
-            <h2 className="text-3xl font-bold">AI Reports</h2>
+            <h2 className="text-3xl font-bold">Analyse Links</h2>
             <p className="mt-4 text-zinc-400">
-              Generate tactical summaries, momentum shifts, and training focus areas.
+              Paste YouTube, Vimeo, or Veo links to create AI-powered coaching reports.
             </p>
           </div>
 
