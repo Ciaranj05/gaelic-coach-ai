@@ -6,6 +6,7 @@ import yt_dlp
 import uuid
 import tempfile
 import subprocess
+import base64
 from datetime import datetime
 
 app = FastAPI(title='Gaelic Coach AI Worker')
@@ -283,7 +284,68 @@ def classify_event_window(second: int, index: int):
     return cycle[index % len(cycle)]
 
 
-def build_event_candidates(url: str, metadata: dict, profile: dict, job_id: str | None = None):
+def extract_event_frames(video_path: str, event: dict, tmpdir: str, event_index: int, profile: dict):
+    frame_count = int(profile.get('eventFramePack', 8))
+    start = max(0, int(event.get('startSecond', 0)))
+    end = max(start + 1, int(event.get('endSecond', start + 30)))
+    duration = max(1, end - start)
+    fps = max(0.1, frame_count / duration)
+    output_pattern = os.path.join(tmpdir, f'event_{event_index}_%02d.jpg')
+
+    subprocess.run(
+        [
+            'ffmpeg', '-y', '-ss', str(start), '-i', video_path,
+            '-t', str(duration),
+            '-vf', f'fps={fps},scale=512:-1',
+            '-frames:v', str(frame_count),
+            output_pattern
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False
+    )
+
+    return sorted([
+        os.path.join(tmpdir, file_name)
+        for file_name in os.listdir(tmpdir)
+        if file_name.startswith(f'event_{event_index}_') and file_name.endswith('.jpg')
+    ])[:frame_count]
+
+
+def analyse_event_frames(client: OpenAI, frame_paths: list, event: dict):
+    if not frame_paths:
+        return ''
+
+    content = [
+        {
+            'type': 'text',
+            'text': f'''Analyse this approximate Gaelic football review window.
+Time: {event.get('time')}
+Candidate type: {event.get('type')}
+Reason selected: {event.get('reason')}
+
+Use only visible evidence from the frames. Do not invent scorers, exact score events, player names, or exact possession outcomes. Focus on Gaelic football tactical cues: kickout shape, middle-third transition, D protection, support runners, direct ball inside, breaking ball, shot selection, counter-press, and defensive screen.
+
+Return 3 concise bullets:
+- Visible tactical cue
+- Likely coaching implication
+- Confidence level: low/medium/high'''
+        }
+    ]
+
+    for frame_path in frame_paths:
+        with open(frame_path, 'rb') as image_file:
+            encoded = base64.b64encode(image_file.read()).decode('utf-8')
+        content.append({'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}', 'detail': 'low'}})
+
+    response = client.chat.completions.create(
+        model='gpt-4o-mini',
+        messages=[{'role': 'user', 'content': content}]
+    )
+    return response.choices[0].message.content or ''
+
+
+def build_event_candidates(url: str, metadata: dict, profile: dict, client: OpenAI | None = None, job_id: str | None = None):
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             if job_id:
@@ -298,8 +360,19 @@ def build_event_candidates(url: str, metadata: dict, profile: dict, job_id: str 
 
             if job_id:
                 set_job_stage(job_id, 'event_selection', 'Selecting the strongest candidate review windows')
-            candidates = select_event_candidates_from_differences(differences)
-            return candidates or fallback_event_candidates(metadata)
+            candidates = select_event_candidates_from_differences(differences) or fallback_event_candidates(metadata)
+
+            if client:
+                if job_id:
+                    set_job_stage(job_id, 'event_analysis', 'Analysing visual frame packs for selected events')
+                enriched = []
+                for index, event in enumerate(candidates[:6], start=1):
+                    frame_paths = extract_event_frames(video_path, event, tmpdir, index, profile)
+                    visual_analysis = analyse_event_frames(client, frame_paths, event)
+                    enriched.append({**event, 'visualAnalysis': visual_analysis, 'framesAnalysed': len(frame_paths)})
+                return enriched + candidates[6:]
+
+            return candidates
     except Exception:
         return fallback_event_candidates(metadata)
 
@@ -316,7 +389,7 @@ def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
         set_job_stage(job_id, 'metadata', 'Reading video title, duration and match metadata')
     metadata = extract_video_metadata(request.url)
 
-    event_candidates = build_event_candidates(request.url, metadata, profile, job_id)
+    event_candidates = build_event_candidates(request.url, metadata, profile, client, job_id)
 
     match_context = request.matchContext or {}
     match_facts = build_match_facts(match_context)
@@ -325,7 +398,7 @@ def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
     scoreline_rules = build_scoreline_rules(match_facts)
 
     if job_id:
-        set_job_stage(job_id, 'event_analysis', 'Analysing selected event windows against scoreline and coached-team context')
+        set_job_stage(job_id, 'event_analysis', 'Combining event analysis with scoreline and coached-team context')
 
     prompt = f'''
 You are an elite Gaelic football performance analyst working directly for {coached_team}.
@@ -345,7 +418,7 @@ SCORELINE-AWARE COACHING RULES:
 VIDEO METADATA:
 {metadata}
 
-FULL-MATCH SCAN EVENT CANDIDATES:
+FULL-MATCH SCAN EVENT CANDIDATES WITH VISUAL ANALYSIS:
 {event_candidates}
 
 COACH NOTES:
@@ -366,6 +439,7 @@ STRICT RULES:
 - Do not contradict the scoreline, winner or margin.
 - Do not invent exact scorers or exact events.
 - Event candidates are approximate scan windows, not confirmed events. Use them as likely review windows, not proof.
+- Visual event analyses are stronger evidence than scoreline-only inference, but still approximate.
 - Use actual team names throughout.
 - Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
 - Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
