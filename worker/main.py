@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 import os
 import yt_dlp
+import tempfile
 
 app = FastAPI(title='Gaelic Coach AI Worker')
 
@@ -52,6 +53,43 @@ def extract_video_metadata(url: str):
         }
 
 
+def transcribe_audio_from_youtube(url: str, client: OpenAI):
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_template = os.path.join(tmpdir, 'audio.%(ext)s')
+
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': output_template,
+                'quiet': True,
+                'noplaylist': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '64'
+                }]
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            audio_path = os.path.join(tmpdir, 'audio.mp3')
+
+            if not os.path.exists(audio_path):
+                return ''
+
+            with open(audio_path, 'rb') as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model='whisper-1',
+                    file=audio_file
+                )
+
+            return transcript.text
+
+    except Exception:
+        return ''
+
+
 @app.post('/analyse-video')
 def analyse_video(request: AnalyseRequest):
     api_key = os.getenv('OPENAI_API_KEY')
@@ -62,6 +100,7 @@ def analyse_video(request: AnalyseRequest):
     client = OpenAI(api_key=api_key)
 
     metadata = extract_video_metadata(request.url)
+    transcript = transcribe_audio_from_youtube(request.url, client)
 
     prompt = f'''
 You are an elite Gaelic football and hurling performance analyst.
@@ -77,14 +116,17 @@ Description: {metadata['description']}
 MATCH URL
 {request.url}
 
+TRANSCRIPT / COMMENTARY
+{transcript[:12000]}
+
 COACH NOTES
 {request.notes}
 
 IMPORTANT:
-- Do NOT pretend you watched the full video.
-- Use the metadata and coach notes intelligently.
-- Infer likely tactical themes carefully.
-- Focus on coaching value.
+- Use transcript and metadata to infer tactical themes.
+- Do NOT claim to visually track players unless explicitly described.
+- Focus on practical coaching insights.
+- Be structured and professional.
 
 Return:
 - executive summary
@@ -117,5 +159,6 @@ Return:
         'mode': 'worker',
         'analysis': analysis,
         'videoMetadata': metadata,
-        'next_stage': 'Next upgrade: full transcript extraction and frame analysis.'
+        'transcriptLength': len(transcript),
+        'next_stage': 'Next upgrade: frame extraction and AI vision analysis.'
     }
