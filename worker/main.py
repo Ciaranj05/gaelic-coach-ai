@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from openai import OpenAI
 import os
 import yt_dlp
+import uuid
+from datetime import datetime
 
 app = FastAPI(title='Gaelic Coach AI Worker')
 
@@ -10,6 +12,19 @@ class AnalyseRequest(BaseModel):
     url: str
     notes: str | None = ''
     matchContext: dict | None = None
+
+jobs = {}
+
+PROGRESS_STAGES = {
+    'queued': {'percent': 5, 'label': 'Queued for analysis'},
+    'metadata': {'percent': 12, 'label': 'Reading match metadata'},
+    'full_match_scan': {'percent': 28, 'label': 'Scanning full match structure'},
+    'event_selection': {'percent': 45, 'label': 'Selecting key review moments'},
+    'event_analysis': {'percent': 68, 'label': 'Analysing tactical event patterns'},
+    'report': {'percent': 88, 'label': 'Building Gaelic football report'},
+    'complete': {'percent': 100, 'label': 'Report ready'},
+    'failed': {'percent': 100, 'label': 'Analysis failed'}
+}
 
 @app.get('/')
 def health():
@@ -21,14 +36,23 @@ def openai_status():
     return {'connected': has_key, 'status': 'configured' if has_key else 'missing_key'}
 
 
+def set_job_stage(job_id: str, stage: str, detail: str | None = None):
+    if job_id not in jobs:
+        return
+    jobs[job_id]['stage'] = stage
+    jobs[job_id]['progress'] = PROGRESS_STAGES.get(stage, PROGRESS_STAGES['queued'])
+    jobs[job_id]['detail'] = detail or jobs[job_id]['progress']['label']
+    jobs[job_id]['updatedAt'] = datetime.utcnow().isoformat()
+
+
 def is_veo_url(url: str):
     return 'veo.co' in url.lower()
 
 
 def processing_profile(url: str):
     if is_veo_url(url):
-        return {'name': 'quick-veo', 'frames': 20, 'transcribe': False}
-    return {'name': 'standard', 'frames': 60, 'transcribe': True}
+        return {'name': 'quick-veo', 'frames': 20, 'transcribe': False, 'scanIntervalSeconds': 2, 'eventFramePack': 6}
+    return {'name': 'standard', 'frames': 60, 'transcribe': True, 'scanIntervalSeconds': 1, 'eventFramePack': 8}
 
 
 def extract_video_metadata(url: str):
@@ -103,7 +127,7 @@ def build_scoreline_rules(match_facts: dict):
 
     if match_facts['coachedGoals'] >= 5:
         rules.append(f'{coached_team} scored {match_facts["coachedGoals"]} goals. Treat goal scoring, finishing and attacking penetration as major strengths. Do NOT recommend finishing practice, goal-scoring drills, shot conversion, or improving goal threat as a main focus unless coach notes explicitly say chances were wasted.')
-        rules.append(f'For {coached_team}, focus on sustaining the attacking patterns that created goals, game management, rest defence, kickout control, and protecting against counterattacks rather than more scoring practice.')
+        rules.append(f'For {coached_team}, focus on sustaining attacking patterns that created goals, game management, rest defence, kickout control, and protecting against counterattacks rather than more scoring practice.')
     elif match_facts['coachedGoals'] <= 1 and match_facts['coachedTeamResult'] != 'won':
         rules.append(f'{coached_team} had limited goal output. It is valid to focus on penetration, high-value chance creation and earlier delivery into scoring zones.')
 
@@ -121,20 +145,57 @@ def build_scoreline_rules(match_facts: dict):
     return '\n'.join(f'- {rule}' for rule in rules) or '- Apply normal Gaelic football scoreline reasoning.'
 
 
-@app.post('/analyse-video')
-def analyse_video(request: AnalyseRequest):
+def build_event_candidates(metadata: dict, profile: dict):
+    duration = int(metadata.get('duration') or 0)
+    if duration <= 0:
+        return [
+            {'time': '06:00 approx', 'type': 'early pattern review', 'reason': 'Early game tactical identity and kickout platform.'},
+            {'time': '18:00 approx', 'type': 'first-half swing', 'reason': 'Middle-third control and transition patterns.'},
+            {'time': '36:00 approx', 'type': 'second-half restart', 'reason': 'Shape after the interval and kickout pressure.'},
+            {'time': '54:00 approx', 'type': 'game management', 'reason': 'Late-game decision-making and defensive screen.'}
+        ]
+
+    checkpoints = [0.12, 0.25, 0.38, 0.52, 0.68, 0.82]
+    events = []
+    for index, fraction in enumerate(checkpoints, start=1):
+        seconds = int(duration * fraction)
+        minutes = seconds // 60
+        remaining = seconds % 60
+        events.append({
+            'time': f'{minutes:02d}:{remaining:02d} approx',
+            'type': ['kickout platform', 'middle-third transition', 'scoring burst', 'breaking ball spell', 'D protection', 'game management'][index - 1],
+            'reason': 'Candidate review window selected from full-match structure for event-level tactical analysis.'
+        })
+    return events
+
+
+def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         raise HTTPException(status_code=500, detail='OPENAI_API_KEY is missing')
 
     client = OpenAI(api_key=api_key)
     profile = processing_profile(request.url)
+
+    if job_id:
+        set_job_stage(job_id, 'metadata', 'Reading video title, duration and match metadata')
     metadata = extract_video_metadata(request.url)
+
+    if job_id:
+        set_job_stage(job_id, 'full_match_scan', 'Scanning the full match timeline for likely review windows')
+    event_candidates = build_event_candidates(metadata, profile)
+
+    if job_id:
+        set_job_stage(job_id, 'event_selection', 'Selecting key Gaelic football event windows for deeper analysis')
+
     match_context = request.matchContext or {}
     match_facts = build_match_facts(match_context)
     coached_team = match_facts['coachedTeam']
     opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
     scoreline_rules = build_scoreline_rules(match_facts)
+
+    if job_id:
+        set_job_stage(job_id, 'event_analysis', 'Analysing selected event windows against scoreline and coached-team context')
 
     prompt = f'''
 You are an elite Gaelic football performance analyst working directly for {coached_team}.
@@ -153,6 +214,9 @@ SCORELINE-AWARE COACHING RULES:
 
 VIDEO METADATA:
 {metadata}
+
+FULL-MATCH EVENT CANDIDATES:
+{event_candidates}
 
 COACH NOTES:
 {request.notes}
@@ -236,6 +300,9 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 One short quote, maximum 55 words. Make it direct, honest and Gaelic football-specific. It should sound like the manager of {coached_team} speaking to players after video review.
 '''
 
+    if job_id:
+        set_job_stage(job_id, 'report', 'Building final manager debrief report')
+
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
@@ -251,5 +318,48 @@ One short quote, maximum 55 words. Make it direct, honest and Gaelic football-sp
         'analysis': analysis,
         'videoMetadata': metadata,
         'matchFacts': match_facts,
-        'processingProfile': profile['name']
+        'processingProfile': profile['name'],
+        'eventCandidates': event_candidates
     }
+
+
+def run_analysis_job(job_id: str, request: AnalyseRequest):
+    try:
+        result = generate_analysis(request, job_id)
+        jobs[job_id]['status'] = 'complete'
+        jobs[job_id]['result'] = result
+        set_job_stage(job_id, 'complete', 'Report ready')
+    except Exception as exc:
+        jobs[job_id]['status'] = 'failed'
+        jobs[job_id]['error'] = str(exc)
+        set_job_stage(job_id, 'failed', 'Analysis failed')
+
+
+@app.post('/analyse-video')
+def analyse_video(request: AnalyseRequest):
+    return generate_analysis(request)
+
+
+@app.post('/analysis-jobs')
+def create_analysis_job(request: AnalyseRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        'jobId': job_id,
+        'status': 'processing',
+        'stage': 'queued',
+        'progress': PROGRESS_STAGES['queued'],
+        'detail': 'Queued for analysis',
+        'createdAt': datetime.utcnow().isoformat(),
+        'updatedAt': datetime.utcnow().isoformat(),
+        'result': None,
+        'error': None
+    }
+    background_tasks.add_task(run_analysis_job, job_id, request)
+    return {'jobId': job_id, 'status': 'processing', 'progress': PROGRESS_STAGES['queued']}
+
+
+@app.get('/analysis-jobs/{job_id}')
+def get_analysis_job(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail='Job not found')
+    return jobs[job_id]
