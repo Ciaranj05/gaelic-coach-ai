@@ -75,6 +75,8 @@ def build_match_facts(match_context: dict):
         'coachedTeamResult': coached_result,
         'teamAGoals': a_goals,
         'teamBGoals': b_goals,
+        'teamAPoints': a_points,
+        'teamBPoints': b_points,
         'teamATotal': a_total,
         'teamBTotal': b_total,
         'goalDifference': a_goals - b_goals,
@@ -97,10 +99,10 @@ def analyse_video(request: AnalyseRequest):
     opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
 
     prompt = f'''
-You are an elite Gaelic football tactical analyst.
+You are an elite Gaelic football performance analyst.
 
-Create a clean coaching dashboard, not a long essay.
-The output must be concise, comparative, visual and coach-friendly.
+Create the same DEFAULT report format every time. It must feel like a clean manager debrief, not an essay.
+Use comparison tables, green ticks, red crosses and short focus points.
 
 MATCH FACTS:
 {match_facts}
@@ -114,81 +116,87 @@ COACH NOTES:
 PROCESSING PROFILE:
 {profile}
 
-NON-NEGOTIABLE RULES:
-- Do not contradict the final score.
-- Do not invent draws, equalisers, scorers or exact events.
+STRICT RULES:
+- Do not contradict the scoreline, winner or margin.
+- Do not invent exact scorers, exact timestamps or events.
 - Use actual team names throughout.
-- Avoid generic filler such as spatial awareness, dynamic movement, communication gaps or momentum unless clearly supported.
-- Reason from Gaelic football scoring logic.
-- Goals are high-value events; points-heavy teams can lose if they concede goals.
-- Keep analysis short, sharp and useful for coaches.
-- Prefer dashboard tables over paragraphs.
-- If evidence is limited, say so in confidence notes.
+- Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed/uncertain areas.
+- Keep text concise and coach-friendly.
+- No long paragraphs.
+- No generic filler like “spatial awareness”, “dynamic movement”, “communication gaps”, unless specifically supported.
+- If data is estimated, label it as estimated.
+- Reason from Gaelic football scoring logic: goals are high-value, points show scoring volume, goal difference often explains match outcome.
 
-Return this exact markdown structure:
+Return this exact markdown structure and nothing else:
 
-# Match Dashboard
-2 concise sentences explaining the result and the core tactical story.
+# Match Snapshot
+| Item | Detail |
+|---|---|
+| Scoreline | {match_facts['scoreline']} |
+| Result | {coached_team} {match_facts['coachedTeamResult']} by {match_facts['margin']} point(s) |
+| Goal Difference | {coached_team} goal difference: {match_facts['goalDifference']} |
+| Core Story | One short sentence explaining why the match went the way it did. |
 
-# Key Coach Takeaway
-One memorable coaching conclusion, maximum 35 words.
+# Estimated Key Match Stats
+| Metric | {coached_team} | {opposition_team} |
+|---|---|---|
+| Possession | Estimated percentage or balance | Estimated percentage or balance |
+| Shot Creation |  |  |
+| Goal Threat |  |  |
+| Transition Speed |  |  |
+| Kick Passing |  |  |
+| Turnovers Conceded |  |  |
+| Scores From Turnovers |  |  |
+| Kickout / Restart Battle |  |  |
+| Breaking Ball |  |  |
+| Defensive Shape |  |  |
 
-# Tactical Comparison
+# Match Comparison
 | Area | {coached_team} | {opposition_team} |
 |---|---|---|
-| Scoring Profile |  |  |
-| Goal Threat |  |  |
+| Possession |  |  |
+| Transition Speed |  |  |
 | Attacking Style |  |  |
-| Transition Play |  |  |
+| Kick Passing |  |  |
+| Shot Creation |  |  |
+| Goal Threat |  |  |
+| Turnovers Attacking Third |  |  |
+| Kick-Out Battle |  |  |
+| Breaking Ball |  |  |
 | Defensive Shape |  |  |
-| Kickout / Restart Battle |  |  |
-| Match Control |  |  |
 
-Use ✅, ⚠️ and ❌ where helpful.
+# Main Focus Areas Going Forward
+1. Focus Area Title
+- Coaching action one
+- Coaching action two
 
-# Key Moments To Review
-| Time | Moment | Coach Review |
-|---|---|---|
-| 06:00 approx |  |  |
-| 12:00 approx |  |  |
-| 30:00 approx |  |  |
-| 54:00 approx |  |  |
+2. Focus Area Title
+- Coaching action one
+- Coaching action two
 
-If exact evidence is weak, label the moment as approximate / medium confidence.
+3. Focus Area Title
+- Coaching action one
+- Coaching action two
 
-# Strengths To Keep
-| Strength | Why It Mattered |
-|---|---|
-|  |  |
-|  |  |
-|  |  |
+4. Focus Area Title
+- Coaching action one
+- Coaching action two
 
-# Issues To Fix
-| Issue | Match Impact | Coaching Fix |
-|---|---|---|
-|  |  |  |
-|  |  |  |
-|  |  |  |
-
-# Training Priorities
-| Priority | Drill / Session Focus | Outcome |
-|---|---|---|
-|  |  |  |
-|  |  |  |
-|  |  |  |
+# Key Manager Takeaway
+One short, punchy paragraph in quotation marks. Make it sound like something a manager could say to the team after review.
 
 # Confidence Notes
 | Confidence | What We Can Trust |
 |---|---|
-| High | Scoreline, winner, margin and goal difference. |
-| Medium | Tactical inferences from score profile, coach context and sampled footage. |
-| Low | Player-specific actions or exact events not visible/timestamped. |
+| High | Scoreline, result, winning margin and goal difference. |
+| Medium | Estimated tactical themes from score profile, coach context and available footage. |
+| Low | Exact player actions, exact timestamps or event details not directly supplied. |
 '''
 
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {'role': 'system', 'content': 'You produce concise Gaelic games coaching dashboards, comparison tables and actionable training recommendations.'},
+            {'role': 'system', 'content': 'You produce clean Gaelic games manager debrief reports with comparison tables, focus areas and concise coaching takeaways.'},
             {'role': 'user', 'content': prompt}
         ]
     )
