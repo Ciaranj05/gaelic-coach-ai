@@ -101,8 +101,8 @@ def analyse_video(request: AnalyseRequest):
     prompt = f'''
 You are an elite Gaelic football performance analyst.
 
-Create the same DEFAULT report format every time. It must feel like a clean manager debrief, not an essay.
-Use comparison tables, green ticks, red crosses and short focus points.
+Create a short manager debrief. Do not write an essay.
+The report must compare the two teams, identify the match-deciding factor, and give three sharp coaching priorities.
 
 MATCH FACTS:
 {match_facts}
@@ -120,12 +120,13 @@ STRICT RULES:
 - Do not contradict the scoreline, winner or margin.
 - Do not invent exact scorers, exact timestamps or events.
 - Use actual team names throughout.
-- Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed/uncertain areas.
-- Keep text concise and coach-friendly.
+- Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
+- Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
+- No generic filler such as “communication”, “spatial awareness”, “dynamic movement”, “cohesion”, “target awareness”, “sharpen transitions”, or “maintain structure”.
+- Focus areas must be practical, specific and match-derived.
+- No confidence notes.
 - No long paragraphs.
-- No generic filler like “spatial awareness”, “dynamic movement”, “communication gaps”, unless specifically supported.
-- If data is estimated, label it as estimated.
-- Reason from Gaelic football scoring logic: goals are high-value, points show scoring volume, goal difference often explains match outcome.
+- Reason from Gaelic football scoring logic: goals are high-value; points show scoring volume; goal difference often explains the result.
 
 Return this exact markdown structure and nothing else:
 
@@ -134,69 +135,40 @@ Return this exact markdown structure and nothing else:
 |---|---|
 | Scoreline | {match_facts['scoreline']} |
 | Result | {coached_team} {match_facts['coachedTeamResult']} by {match_facts['margin']} point(s) |
-| Goal Difference | {coached_team} goal difference: {match_facts['goalDifference']} |
-| Core Story | One short sentence explaining why the match went the way it did. |
+| Core Story | One direct tactical sentence explaining why the game went this way. |
 
-# Estimated Key Match Stats
-| Metric | {coached_team} | {opposition_team} |
-|---|---|---|
-| Possession | Estimated percentage or balance | Estimated percentage or balance |
-| Shot Creation |  |  |
-| Goal Threat |  |  |
-| Transition Speed |  |  |
-| Kick Passing |  |  |
-| Turnovers Conceded |  |  |
-| Scores From Turnovers |  |  |
-| Kickout / Restart Battle |  |  |
-| Breaking Ball |  |  |
-| Defensive Shape |  |  |
+# Match-Deciding Factor
+One blunt paragraph, maximum 45 words. Explain the one factor that most shaped the result.
 
-# Match Comparison
+# Tactical Comparison
 | Area | {coached_team} | {opposition_team} |
 |---|---|---|
-| Possession |  |  |
-| Transition Speed |  |  |
-| Attacking Style |  |  |
-| Kick Passing |  |  |
-| Shot Creation |  |  |
-| Goal Threat |  |  |
-| Turnovers Attacking Third |  |  |
-| Kick-Out Battle |  |  |
-| Breaking Ball |  |  |
-| Defensive Shape |  |  |
+| Possession | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Transition Speed | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Attacking Style | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Kick Passing | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Shot Creation | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Goal Threat | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Turnovers | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Kick-Out Battle | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Breaking Ball | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Defensive Shape | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
 
 # Main Focus Areas Going Forward
-1. Focus Area Title
-- Coaching action one
-- Coaching action two
-
-2. Focus Area Title
-- Coaching action one
-- Coaching action two
-
-3. Focus Area Title
-- Coaching action one
-- Coaching action two
-
-4. Focus Area Title
-- Coaching action one
-- Coaching action two
+| Priority | Why It Matters | Coaching Action |
+|---|---|---|
+| Specific focus area 1 | Match-specific reason | Practical training action |
+| Specific focus area 2 | Match-specific reason | Practical training action |
+| Specific focus area 3 | Match-specific reason | Practical training action |
 
 # Key Manager Takeaway
-One short, punchy paragraph in quotation marks. Make it sound like something a manager could say to the team after review.
-
-# Confidence Notes
-| Confidence | What We Can Trust |
-|---|---|
-| High | Scoreline, result, winning margin and goal difference. |
-| Medium | Estimated tactical themes from score profile, coach context and available footage. |
-| Low | Exact player actions, exact timestamps or event details not directly supplied. |
+One short quote, maximum 55 words. Make it direct, honest and tactical. It should sound like a real manager speaking to players after video review.
 '''
 
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {'role': 'system', 'content': 'You produce clean Gaelic games manager debrief reports with comparison tables, focus areas and concise coaching takeaways.'},
+            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports with comparison tables, match-deciding factors and direct coaching priorities.'},
             {'role': 'user', 'content': prompt}
         ]
     )
