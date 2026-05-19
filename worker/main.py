@@ -4,6 +4,8 @@ from openai import OpenAI
 import os
 import yt_dlp
 import uuid
+import tempfile
+import subprocess
 from datetime import datetime
 
 app = FastAPI(title='Gaelic Coach AI Worker')
@@ -18,10 +20,11 @@ jobs = {}
 PROGRESS_STAGES = {
     'queued': {'percent': 5, 'label': 'Queued for analysis'},
     'metadata': {'percent': 12, 'label': 'Reading match metadata'},
-    'full_match_scan': {'percent': 28, 'label': 'Scanning full match structure'},
-    'event_selection': {'percent': 45, 'label': 'Selecting key review moments'},
-    'event_analysis': {'percent': 68, 'label': 'Analysing tactical event patterns'},
-    'report': {'percent': 88, 'label': 'Building Gaelic football report'},
+    'download': {'percent': 22, 'label': 'Downloading match video'},
+    'full_match_scan': {'percent': 38, 'label': 'Scanning full match frames'},
+    'event_selection': {'percent': 55, 'label': 'Selecting key review moments'},
+    'event_analysis': {'percent': 72, 'label': 'Analysing tactical event patterns'},
+    'report': {'percent': 90, 'label': 'Building Gaelic football report'},
     'complete': {'percent': 100, 'label': 'Report ready'},
     'failed': {'percent': 100, 'label': 'Analysis failed'}
 }
@@ -51,8 +54,27 @@ def is_veo_url(url: str):
 
 def processing_profile(url: str):
     if is_veo_url(url):
-        return {'name': 'quick-veo', 'frames': 20, 'transcribe': False, 'scanIntervalSeconds': 2, 'eventFramePack': 6}
-    return {'name': 'standard', 'frames': 60, 'transcribe': True, 'scanIntervalSeconds': 1, 'eventFramePack': 8}
+        return {
+            'name': 'quick-veo',
+            'frames': 20,
+            'transcribe': False,
+            'scanIntervalSeconds': 2,
+            'eventFramePack': 6,
+            'videoFormat': 'best[height<=360]/best'
+        }
+    return {
+        'name': 'standard',
+        'frames': 60,
+        'transcribe': True,
+        'scanIntervalSeconds': 1,
+        'eventFramePack': 8,
+        'videoFormat': 'best[height<=480]/best'
+    }
+
+
+def format_timestamp(seconds: int):
+    seconds = max(0, int(seconds or 0))
+    return f'{seconds // 60:02d}:{seconds % 60:02d}'
 
 
 def extract_video_metadata(url: str):
@@ -145,28 +167,141 @@ def build_scoreline_rules(match_facts: dict):
     return '\n'.join(f'- {rule}' for rule in rules) or '- Apply normal Gaelic football scoreline reasoning.'
 
 
-def build_event_candidates(metadata: dict, profile: dict):
+def fallback_event_candidates(metadata: dict):
     duration = int(metadata.get('duration') or 0)
     if duration <= 0:
-        return [
-            {'time': '06:00 approx', 'type': 'early pattern review', 'reason': 'Early game tactical identity and kickout platform.'},
-            {'time': '18:00 approx', 'type': 'first-half swing', 'reason': 'Middle-third control and transition patterns.'},
-            {'time': '36:00 approx', 'type': 'second-half restart', 'reason': 'Shape after the interval and kickout pressure.'},
-            {'time': '54:00 approx', 'type': 'game management', 'reason': 'Late-game decision-making and defensive screen.'}
-        ]
+        times = [360, 1080, 2160, 3240]
+    else:
+        times = [int(duration * fraction) for fraction in [0.12, 0.25, 0.38, 0.52, 0.68, 0.82]]
 
-    checkpoints = [0.12, 0.25, 0.38, 0.52, 0.68, 0.82]
-    events = []
-    for index, fraction in enumerate(checkpoints, start=1):
-        seconds = int(duration * fraction)
-        minutes = seconds // 60
-        remaining = seconds % 60
-        events.append({
-            'time': f'{minutes:02d}:{remaining:02d} approx',
-            'type': ['kickout platform', 'middle-third transition', 'scoring burst', 'breaking ball spell', 'D protection', 'game management'][index - 1],
-            'reason': 'Candidate review window selected from full-match structure for event-level tactical analysis.'
-        })
-    return events
+    labels = ['kickout platform', 'middle-third transition', 'scoring burst', 'breaking ball spell', 'D protection', 'game management']
+    return [
+        {
+            'time': f'{format_timestamp(seconds)} approx',
+            'startSecond': max(0, seconds - 15),
+            'endSecond': seconds + 15,
+            'type': labels[index % len(labels)],
+            'reason': 'Fallback checkpoint selected from match timeline.',
+            'confidence': 'low'
+        }
+        for index, seconds in enumerate(times)
+    ]
+
+
+def download_match_video(url: str, tmpdir: str, profile: dict):
+    video_path = os.path.join(tmpdir, 'match.mp4')
+    ydl_opts = {
+        'format': profile.get('videoFormat', 'best[height<=480]/best'),
+        'outtmpl': video_path,
+        'quiet': False,
+        'noplaylist': True,
+        'merge_output_format': 'mp4',
+        'nocheckcertificate': True,
+        'socket_timeout': 30,
+        'retries': 2,
+        'fragment_retries': 2
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+    return video_path if os.path.exists(video_path) else None
+
+
+def scan_video_frame_differences(video_path: str, profile: dict, max_scan_seconds: int = 7200):
+    interval = int(profile.get('scanIntervalSeconds', 1))
+    width, height = 64, 36
+    frame_size = width * height
+
+    command = [
+        'ffmpeg', '-i', video_path,
+        '-vf', f'fps=1/{interval},scale={width}:{height},format=gray',
+        '-frames:v', str(max_scan_seconds // interval),
+        '-f', 'rawvideo', '-'
+    ]
+
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    previous = None
+    differences = []
+    frame_index = 0
+
+    try:
+        while True:
+            frame = process.stdout.read(frame_size) if process.stdout else b''
+            if not frame or len(frame) < frame_size:
+                break
+
+            if previous is not None:
+                diff = sum(abs(frame[i] - previous[i]) for i in range(frame_size)) / frame_size
+                differences.append({'second': frame_index * interval, 'difference': round(diff, 2)})
+
+            previous = frame
+            frame_index += 1
+    finally:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+    return differences
+
+
+def select_event_candidates_from_differences(differences: list, max_events: int = 8):
+    if not differences:
+        return []
+
+    sorted_diffs = sorted(differences, key=lambda item: item['difference'], reverse=True)
+    selected = []
+    minimum_gap_seconds = 180
+
+    for item in sorted_diffs:
+        second = int(item['second'])
+        if all(abs(second - existing['startSecond']) > minimum_gap_seconds for existing in selected):
+            selected.append({
+                'time': f'{format_timestamp(second)} approx',
+                'startSecond': max(0, second - 20),
+                'endSecond': second + 25,
+                'type': classify_event_window(second, len(selected)),
+                'reason': f'Large visual change detected during full-match scan (frame difference {item["difference"]}). Possible kickout, turnover, scoring chance, camera reset, or transition phase.',
+                'confidence': 'medium'
+            })
+        if len(selected) >= max_events:
+            break
+
+    return sorted(selected, key=lambda item: item['startSecond'])
+
+
+def classify_event_window(second: int, index: int):
+    cycle = [
+        'kickout / restart review',
+        'middle-third transition',
+        'possible scoring burst',
+        'breaking ball contest',
+        'D protection / defensive screen',
+        'game management phase',
+        'counter-press after turnover',
+        'direct ball inside review'
+    ]
+    return cycle[index % len(cycle)]
+
+
+def build_event_candidates(url: str, metadata: dict, profile: dict, job_id: str | None = None):
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            if job_id:
+                set_job_stage(job_id, 'download', 'Downloading match video for full-match scan')
+            video_path = download_match_video(url, tmpdir, profile)
+            if not video_path:
+                return fallback_event_candidates(metadata)
+
+            if job_id:
+                set_job_stage(job_id, 'full_match_scan', 'Extracting low-res scan frames and comparing movement changes')
+            differences = scan_video_frame_differences(video_path, profile)
+
+            if job_id:
+                set_job_stage(job_id, 'event_selection', 'Selecting the strongest candidate review windows')
+            candidates = select_event_candidates_from_differences(differences)
+            return candidates or fallback_event_candidates(metadata)
+    except Exception:
+        return fallback_event_candidates(metadata)
 
 
 def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
@@ -181,12 +316,7 @@ def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
         set_job_stage(job_id, 'metadata', 'Reading video title, duration and match metadata')
     metadata = extract_video_metadata(request.url)
 
-    if job_id:
-        set_job_stage(job_id, 'full_match_scan', 'Scanning the full match timeline for likely review windows')
-    event_candidates = build_event_candidates(metadata, profile)
-
-    if job_id:
-        set_job_stage(job_id, 'event_selection', 'Selecting key Gaelic football event windows for deeper analysis')
+    event_candidates = build_event_candidates(request.url, metadata, profile, job_id)
 
     match_context = request.matchContext or {}
     match_facts = build_match_facts(match_context)
@@ -215,7 +345,7 @@ SCORELINE-AWARE COACHING RULES:
 VIDEO METADATA:
 {metadata}
 
-FULL-MATCH EVENT CANDIDATES:
+FULL-MATCH SCAN EVENT CANDIDATES:
 {event_candidates}
 
 COACH NOTES:
@@ -234,7 +364,8 @@ GAELIC FOOTBALL LANGUAGE RULES:
 
 STRICT RULES:
 - Do not contradict the scoreline, winner or margin.
-- Do not invent exact scorers, exact timestamps or events.
+- Do not invent exact scorers or exact events.
+- Event candidates are approximate scan windows, not confirmed events. Use them as likely review windows, not proof.
 - Use actual team names throughout.
 - Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
 - Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
