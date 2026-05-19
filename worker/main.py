@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
 import os
+import yt_dlp
 
 app = FastAPI(title='Gaelic Coach AI Worker')
 
@@ -24,6 +25,33 @@ def openai_status():
         'status': 'configured' if has_key else 'missing_key'
     }
 
+
+def extract_video_metadata(url: str):
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'skip_download': True,
+            'nocheckcertificate': True
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            return {
+                'title': info.get('title', ''),
+                'description': info.get('description', ''),
+                'uploader': info.get('uploader', ''),
+                'duration': info.get('duration', 0)
+            }
+    except Exception:
+        return {
+            'title': '',
+            'description': '',
+            'uploader': '',
+            'duration': 0
+        }
+
+
 @app.post('/analyse-video')
 def analyse_video(request: AnalyseRequest):
     api_key = os.getenv('OPENAI_API_KEY')
@@ -33,24 +61,39 @@ def analyse_video(request: AnalyseRequest):
 
     client = OpenAI(api_key=api_key)
 
+    metadata = extract_video_metadata(request.url)
+
     prompt = f'''
 You are an elite Gaelic football and hurling performance analyst.
 
 Analyse this match context and create a coaching report.
 
-Match URL:
+VIDEO INFORMATION
+Title: {metadata['title']}
+Uploader: {metadata['uploader']}
+Duration: {metadata['duration']} seconds
+Description: {metadata['description']}
+
+MATCH URL
 {request.url}
 
-Notes:
+COACH NOTES
 {request.notes}
 
-Return a practical coaching report with:
-- match summary
-- key tactical insights
+IMPORTANT:
+- Do NOT pretend you watched the full video.
+- Use the metadata and coach notes intelligently.
+- Infer likely tactical themes carefully.
+- Focus on coaching value.
+
+Return:
+- executive summary
+- attacking analysis
+- defensive analysis
 - transition analysis
 - kickout observations
-- training focus
-- coaching recommendations
+- training priorities
+- coach recommendations
 '''
 
     response = client.chat.completions.create(
@@ -73,5 +116,6 @@ Return a practical coaching report with:
         'status': 'complete',
         'mode': 'worker',
         'analysis': analysis,
-        'next_stage': 'Connect yt-dlp and FFmpeg for real video ingestion.'
+        'videoMetadata': metadata,
+        'next_stage': 'Next upgrade: full transcript extraction and frame analysis.'
     }
