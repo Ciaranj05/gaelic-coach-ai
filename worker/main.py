@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from openai import OpenAI
 import os
@@ -10,6 +11,9 @@ import base64
 from datetime import datetime
 
 app = FastAPI(title='Gaelic Coach AI Worker')
+
+CLIP_ROOT = '/tmp/gaelic-coach-ai-clips'
+os.makedirs(CLIP_ROOT, exist_ok=True)
 
 class AnalyseRequest(BaseModel):
     url: str
@@ -25,7 +29,8 @@ PROGRESS_STAGES = {
     'full_match_scan': {'percent': 38, 'label': 'Scanning full match frames'},
     'event_selection': {'percent': 55, 'label': 'Selecting key review moments'},
     'event_analysis': {'percent': 72, 'label': 'Analysing tactical event patterns'},
-    'report': {'percent': 90, 'label': 'Building Gaelic football report'},
+    'clip_extraction': {'percent': 82, 'label': 'Creating review clips'},
+    'report': {'percent': 92, 'label': 'Building Gaelic football report'},
     'complete': {'percent': 100, 'label': 'Report ready'},
     'failed': {'percent': 100, 'label': 'Analysis failed'}
 }
@@ -61,7 +66,8 @@ def processing_profile(url: str):
             'transcribe': False,
             'scanIntervalSeconds': 2,
             'eventFramePack': 6,
-            'videoFormat': 'best[height<=360]/best'
+            'videoFormat': 'best[height<=360]/best',
+            'clipCount': 4
         }
     return {
         'name': 'standard',
@@ -69,7 +75,8 @@ def processing_profile(url: str):
         'transcribe': True,
         'scanIntervalSeconds': 1,
         'eventFramePack': 8,
-        'videoFormat': 'best[height<=480]/best'
+        'videoFormat': 'best[height<=480]/best',
+        'clipCount': 6
     }
 
 
@@ -293,13 +300,7 @@ def extract_event_frames(video_path: str, event: dict, tmpdir: str, event_index:
     output_pattern = os.path.join(tmpdir, f'event_{event_index}_%02d.jpg')
 
     subprocess.run(
-        [
-            'ffmpeg', '-y', '-ss', str(start), '-i', video_path,
-            '-t', str(duration),
-            '-vf', f'fps={fps},scale=512:-1',
-            '-frames:v', str(frame_count),
-            output_pattern
-        ],
+        ['ffmpeg', '-y', '-ss', str(start), '-i', video_path, '-t', str(duration), '-vf', f'fps={fps},scale=512:-1', '-frames:v', str(frame_count), output_pattern],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False
@@ -312,14 +313,53 @@ def extract_event_frames(video_path: str, event: dict, tmpdir: str, event_index:
     ])[:frame_count]
 
 
+def extract_event_clip(video_path: str, event: dict, job_id: str | None, event_index: int):
+    if not job_id:
+        return None
+
+    clip_dir = os.path.join(CLIP_ROOT, job_id)
+    os.makedirs(clip_dir, exist_ok=True)
+
+    start = max(0, int(event.get('startSecond', 0)))
+    end = max(start + 1, int(event.get('endSecond', start + 30)))
+    duration = min(45, max(8, end - start))
+    clip_id = f'clip_{event_index:02d}'
+    filename = f'{clip_id}.mp4'
+    output_path = os.path.join(clip_dir, filename)
+
+    subprocess.run(
+        [
+            'ffmpeg', '-y', '-ss', str(start), '-i', video_path, '-t', str(duration),
+            '-vf', 'scale=640:-2', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30',
+            '-an', '-movflags', '+faststart', output_path
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False
+    )
+
+    if not os.path.exists(output_path):
+        return None
+
+    return {
+        'clipId': clip_id,
+        'filename': filename,
+        'startSecond': start,
+        'endSecond': start + duration,
+        'duration': duration,
+        'time': f'{format_timestamp(start)}–{format_timestamp(start + duration)} approx',
+        'type': event.get('type', 'review clip'),
+        'downloadPath': f'/analysis-jobs/{job_id}/clips/{clip_id}'
+    }
+
+
 def analyse_event_frames(client: OpenAI, frame_paths: list, event: dict):
     if not frame_paths:
         return ''
 
-    content = [
-        {
-            'type': 'text',
-            'text': f'''Analyse this approximate Gaelic football review window.
+    content = [{
+        'type': 'text',
+        'text': f'''Analyse this approximate Gaelic football review window.
 Time: {event.get('time')}
 Candidate type: {event.get('type')}
 Reason selected: {event.get('reason')}
@@ -330,18 +370,14 @@ Return 3 concise bullets:
 - Visible tactical cue
 - Likely coaching implication
 - Confidence level: low/medium/high'''
-        }
-    ]
+    }]
 
     for frame_path in frame_paths:
         with open(frame_path, 'rb') as image_file:
             encoded = base64.b64encode(image_file.read()).decode('utf-8')
         content.append({'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}', 'detail': 'low'}})
 
-    response = client.chat.completions.create(
-        model='gpt-4o-mini',
-        messages=[{'role': 'user', 'content': content}]
-    )
+    response = client.chat.completions.create(model='gpt-4o-mini', messages=[{'role': 'user', 'content': content}])
     return response.choices[0].message.content or ''
 
 
@@ -366,48 +402,24 @@ def build_event_candidates(url: str, metadata: dict, profile: dict, client: Open
                 if job_id:
                     set_job_stage(job_id, 'event_analysis', 'Analysing visual frame packs for selected events')
                 enriched = []
-                for index, event in enumerate(candidates[:6], start=1):
+                clip_count = int(profile.get('clipCount', 6))
+                for index, event in enumerate(candidates[:clip_count], start=1):
                     frame_paths = extract_event_frames(video_path, event, tmpdir, index, profile)
                     visual_analysis = analyse_event_frames(client, frame_paths, event)
-                    enriched.append({**event, 'visualAnalysis': visual_analysis, 'framesAnalysed': len(frame_paths)})
-                return enriched + candidates[6:]
+                    clip = extract_event_clip(video_path, event, job_id, index)
+                    enriched.append({**event, 'visualAnalysis': visual_analysis, 'framesAnalysed': len(frame_paths), 'clip': clip})
+                return enriched + candidates[clip_count:]
 
             return candidates
     except Exception:
         return fallback_event_candidates(metadata)
 
 
-def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        raise HTTPException(status_code=500, detail='OPENAI_API_KEY is missing')
-
-    client = OpenAI(api_key=api_key)
-    profile = processing_profile(request.url)
-
-    if job_id:
-        set_job_stage(job_id, 'metadata', 'Reading video title, duration and match metadata')
-    metadata = extract_video_metadata(request.url)
-
-    event_candidates = build_event_candidates(request.url, metadata, profile, client, job_id)
-
-    match_context = request.matchContext or {}
-    match_facts = build_match_facts(match_context)
-    coached_team = match_facts['coachedTeam']
-    opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
-    scoreline_rules = build_scoreline_rules(match_facts)
-
-    if job_id:
-        set_job_stage(job_id, 'event_analysis', 'Combining event analysis with scoreline and coached-team context')
-
-    prompt = f'''
+def build_report_prompt(coached_team, opposition_team, match_facts, scoreline_rules, metadata, event_candidates, notes, profile):
+    return f'''
 You are an elite Gaelic football performance analyst working directly for {coached_team}.
 
-This report is FOR the coaching group of {coached_team}.
-The entire analysis should be biased toward helping {coached_team} improve.
-
-Create a short Gaelic football manager debrief. Do not write an essay.
-The report must compare the two teams, include an estimated key stats table, identify the match-deciding factor, and give three sharp coaching priorities specifically designed to help {coached_team} improve.
+Create a short Gaelic football manager debrief for {coached_team}. Do not write an essay. Use the event-candidate visual analysis as approximate evidence, not absolute proof.
 
 MATCH FACTS:
 {match_facts}
@@ -418,11 +430,11 @@ SCORELINE-AWARE COACHING RULES:
 VIDEO METADATA:
 {metadata}
 
-FULL-MATCH SCAN EVENT CANDIDATES WITH VISUAL ANALYSIS:
+FULL-MATCH SCAN EVENT CANDIDATES WITH VISUAL ANALYSIS AND CLIPS:
 {event_candidates}
 
 COACH NOTES:
-{request.notes}
+{notes}
 
 PROCESSING PROFILE:
 {profile}
@@ -431,28 +443,14 @@ GAELIC FOOTBALL LANGUAGE RULES:
 - This is Gaelic football, not soccer, rugby, NFL, or generic sport.
 - Use authentic Gaelic football coaching language: kickouts, breaking ball, middle third, runners from deep, direct ball inside, support runners, scoring zone, D protection, sweeper cover, tracking runners, overlap support, counter-press after turnover, retaining primary possession, second ball, kick-pass threat, running game, shot selection, game management, purple patches, scoring bursts, rest defence, defensive screen, half-back line, half-forward line, opposition kickout press.
 - Prefer observation-first labels over vague ratings. Example: “Created scores from middle-third turnovers ✅” instead of “Strong ✅”.
-- Avoid generic football/sports labels like “proactive control”, “lacks initiative”, “effective”, “poor performance”, “disjointed”, “passive and reactive”, “offensive structure”, “defensive cohesion”.
-- Do not use soccer-style phrases like “final third”, “pressing defence”, “formation”, “attacking penetration” unless adapted to Gaelic football context.
-- Manager takeaway should sound like a Gaelic football manager after video review, not a corporate summary.
-
-STRICT RULES:
+- Avoid generic football/sports labels like “effective”, “poor performance”, “offensive structure”, “defensive cohesion”.
 - Do not contradict the scoreline, winner or margin.
 - Do not invent exact scorers or exact events.
-- Event candidates are approximate scan windows, not confirmed events. Use them as likely review windows, not proof.
-- Visual event analyses are stronger evidence than scoreline-only inference, but still approximate.
-- Use actual team names throughout.
-- Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
 - Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
-- Estimated stats must be labelled as estimated and should be plausible from the scoreline/context, not fake precision.
-- Use ranges or labels where exact numbers are not reliable, for example “50–55% estimated”, “high scoring volume”, “limited goal threat”, “cleaner kickout platform”.
-- Focus primarily on {coached_team}: their strengths, weaknesses, tactical issues and coaching opportunities.
-- The opposition analysis should only exist to explain what hurt or exposed {coached_team}.
+- Estimated stats must be labelled as estimated and plausible, not fake precision.
+- Focus primarily on {coached_team}. Opposition analysis should only explain what hurt or exposed {coached_team}.
 - Main Focus Areas must be practical, tactical and directly useful for {coached_team} training sessions.
-- Do not recommend improving something that was obviously a major strength from the scoreline.
-- The Key Manager Takeaway must sound like the manager of {coached_team} speaking internally to players.
-- No confidence notes.
-- No long paragraphs.
-- Reason from Gaelic football scoring logic: goals are high-value; points show scoring volume; goal difference often explains the result.
+- No confidence notes. No long paragraphs.
 
 Return this exact markdown structure and nothing else:
 
@@ -474,8 +472,6 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 | Goal Threat | {match_facts['coachedGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ | {match_facts['oppositionGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ |
 | Point Output | {match_facts['coachedPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ | {match_facts['oppositionPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ |
 | Transition Scores | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
-| Turnovers Conceded | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
-| Scores From Turnovers | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
 | Kickout / Restart Retention | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
 | Breaking Ball | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
 | Defensive Scores Conceded | based on opponent total + Gaelic football defensive label + ✅/⚠️/❌ | based on opponent total + Gaelic football defensive label + ✅/⚠️/❌ |
@@ -483,7 +479,6 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 # {coached_team} – Tactical Comparison
 | Area | {coached_team} | {opposition_team} |
 |---|---|---|
-| Possession | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 | Transition Through Middle Third | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 | Direct Ball Inside | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 | Kick-Pass Threat | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
@@ -491,8 +486,12 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 | Goal Threat | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 | Turnovers / Counter-Press | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 | Kickout Platform | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
-| Breaking Ball | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 | D Protection / Defensive Screen | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+
+# {coached_team} – Review Clips
+| Clip | Why Review It |
+|---|---|
+| Use available clip links from event candidates | One specific coaching reason |
 
 # {coached_team} – Main Focus Areas Going Forward
 | Priority | Why It Matters For {coached_team} | Coaching Action |
@@ -502,8 +501,34 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 | Specific Gaelic football focus area 3 | Match-specific reason linked to Gaelic football patterns | Practical training action for {coached_team} |
 
 # {coached_team} – Key Manager Takeaway
-One short quote, maximum 55 words. Make it direct, honest and Gaelic football-specific. It should sound like the manager of {coached_team} speaking to players after video review.
+One short quote, maximum 55 words. Make it direct, honest and Gaelic football-specific.
 '''
+
+
+def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=500, detail='OPENAI_API_KEY is missing')
+
+    client = OpenAI(api_key=api_key)
+    profile = processing_profile(request.url)
+
+    if job_id:
+        set_job_stage(job_id, 'metadata', 'Reading video title, duration and match metadata')
+    metadata = extract_video_metadata(request.url)
+
+    event_candidates = build_event_candidates(request.url, metadata, profile, client, job_id)
+
+    if job_id:
+        set_job_stage(job_id, 'clip_extraction', 'Review clips created for selected moments')
+
+    match_context = request.matchContext or {}
+    match_facts = build_match_facts(match_context)
+    coached_team = match_facts['coachedTeam']
+    opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
+    scoreline_rules = build_scoreline_rules(match_facts)
+
+    prompt = build_report_prompt(coached_team, opposition_team, match_facts, scoreline_rules, metadata, event_candidates, request.notes, profile)
 
     if job_id:
         set_job_stage(job_id, 'report', 'Building final manager debrief report')
@@ -517,6 +542,8 @@ One short quote, maximum 55 words. Make it direct, honest and Gaelic football-sp
     )
 
     analysis = response.choices[0].message.content
+    clips = [event.get('clip') for event in event_candidates if isinstance(event, dict) and event.get('clip')]
+
     return {
         'status': 'complete',
         'mode': 'worker',
@@ -524,7 +551,8 @@ One short quote, maximum 55 words. Make it direct, honest and Gaelic football-sp
         'videoMetadata': metadata,
         'matchFacts': match_facts,
         'processingProfile': profile['name'],
-        'eventCandidates': event_candidates
+        'eventCandidates': event_candidates,
+        'clips': clips
     }
 
 
@@ -568,3 +596,11 @@ def get_analysis_job(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail='Job not found')
     return jobs[job_id]
+
+
+@app.get('/analysis-jobs/{job_id}/clips/{clip_id}')
+def download_clip(job_id: str, clip_id: str):
+    clip_path = os.path.join(CLIP_ROOT, job_id, f'{clip_id}.mp4')
+    if not os.path.exists(clip_path):
+        raise HTTPException(status_code=404, detail='Clip not found or expired')
+    return FileResponse(clip_path, media_type='video/mp4', filename=f'{clip_id}.mp4')
