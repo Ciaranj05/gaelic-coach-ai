@@ -12,6 +12,7 @@ app = FastAPI(title='Gaelic Coach AI Worker')
 class AnalyseRequest(BaseModel):
     url: str
     notes: str | None = ''
+    matchContext: dict | None = None
 
 @app.get('/')
 def health():
@@ -140,7 +141,7 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
                 content = [
                     {
                         'type': 'text',
-                        'text': f'You are reviewing batch {batch_number} of sampled frames from a Gaelic football or hurling match. Identify visible tactical patterns only: pitch shape, player spacing, defensive structure, attacking width, restarts, pressure, transition spacing, and obvious coaching observations. Do not invent exact events, scores, or player identities.'
+                        'text': f'You are reviewing sampled frames from a Gaelic football or hurling match. Only describe visible tactical patterns. Focus on spacing, transitions, kickout structure, attacking shape, overloads, defensive compactness and pressure. Do not invent scores, events or player identities. If evidence is weak, explicitly state uncertainty.'
                     }
                 ]
 
@@ -186,10 +187,29 @@ def analyse_video(request: AnalyseRequest):
     transcript = transcribe_audio_from_youtube(request.url, client)
     visual_observations = extract_frames_from_youtube(request.url, client)
 
-    prompt = f'''
-You are an elite Gaelic football and hurling performance analyst.
+    match_context = request.matchContext or {}
 
-Create a professional coaching report from the available video-derived data.
+    coached_team = match_context.get('coachedTeam', 'The coached team')
+    opposition_team = match_context.get('teamB', 'the opposition')
+
+    prompt = f'''
+You are a senior Gaelic football and hurling performance analyst.
+
+Your task is to produce evidence-based tactical analysis.
+
+IMPORTANT RULES:
+- ONLY reference observations supported by transcript, frame observations or match context.
+- NEVER invent exact events, scores, possessions or player identities.
+- If evidence is weak or uncertain, explicitly state uncertainty.
+- Use the actual team names throughout.
+- Analyse primarily from the perspective of {coached_team}.
+- Explain WHY the result happened.
+- Avoid generic coaching clichés.
+- Prefer fewer, sharper insights over long generic paragraphs.
+- Every recommendation must connect to an observed issue.
+
+MATCH CONTEXT
+{match_context}
 
 VIDEO INFORMATION
 Title: {metadata['title']}
@@ -201,29 +221,42 @@ MATCH URL
 {request.url}
 
 TRANSCRIPT / COMMENTARY
-{transcript[:12000]}
+{transcript[:10000]}
 
-VISUAL FRAME OBSERVATIONS FROM UP TO 60 SAMPLED FRAMES
-{visual_observations[:14000]}
+VISUAL FRAME OBSERVATIONS
+{visual_observations[:12000]}
 
 COACH NOTES
 {request.notes}
 
-IMPORTANT:
-- Use transcript, metadata, coach notes and sampled frame observations.
-- Be clear about themes rather than pretending perfect player tracking.
-- Focus on practical coaching value.
-- Include specific sections and actionable training recommendations.
+Return a concise but high-quality coaching report with these exact sections:
 
-Return:
-- executive summary
-- attacking analysis
-- defensive analysis
-- transition analysis
-- kickout/restart observations
-- visible tactical themes
-- training priorities
-- coach recommendations
+# Match Flow
+- explain momentum and overall tactical story
+- explain why {coached_team} won or lost
+
+# Strengths Shown By {coached_team}
+- maximum 5 evidence-based strengths
+
+# Weaknesses Shown By {coached_team}
+- maximum 5 evidence-based weaknesses
+
+# Tactical Themes
+- explain the clearest patterns observed
+- mention transitions, kickouts, shape or scoring patterns only if evidence exists
+
+# What Changed The Game
+- explain major tactical swing factors
+
+# Training Priorities
+- maximum 5 very practical coaching actions
+- include drills, structures or session focus ideas
+
+# Confidence Notes
+- clearly explain what observations were high confidence vs uncertain
+
+Keep the tone elite-level, concise and tactical.
+Do not write generic filler sentences.
 '''
 
     response = client.chat.completions.create(
@@ -231,7 +264,7 @@ Return:
         messages=[
             {
                 'role': 'system',
-                'content': 'You are an expert Gaelic games analyst. Be practical, specific, and coach-focused.'
+                'content': 'You are an elite Gaelic games tactical analyst. You prioritise evidence, specificity and tactical reasoning over generic coaching language.'
             },
             {
                 'role': 'user',
@@ -250,5 +283,5 @@ Return:
         'transcriptLength': len(transcript),
         'visualAnalysisLength': len(visual_observations),
         'framesSampledTarget': 60,
-        'next_stage': 'Future upgrade: event detection, clip creation, player tracking and persistent report storage.'
+        'next_stage': 'Future upgrade: event detection, tactical tagging and clip generation.'
     }
