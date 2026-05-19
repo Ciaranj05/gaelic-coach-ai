@@ -20,15 +20,17 @@ SCORE_OUTCOMES = ['point','goal','wide','save','blocked','unknown']
 KICKOUT_OUTCOMES = ['short_retained','won_clean','won_breaking_ball','lost_clean','lost_breaking_ball','pressed_into_turnover','contested_unknown','not_kickout','unknown']
 POSSESSION_OUTCOMES = ['retained','lost','won_back','turnover_for','turnover_against','unclear']
 TRANSITION_OUTCOMES = ['created_score','created_chance','carried_to_scoring_zone','slowed_down','forced_backwards','turned_over','conceded_counter','not_transition','unknown']
+FIELD_ZONES = ['defensive_third','middle_third','attacking_third','scoring_zone','left_channel','right_channel','central_channel','wide_channel','unknown']
+MOMENTUM_LABELS = ['dominant_spell','pressure_spell','scoring_burst','defensive_stand','settled_phase','unclear']
 PROGRESS_STAGES = {
     'queued': {'percent': 5, 'label': 'Queued for analysis'},
     'metadata': {'percent': 12, 'label': 'Reading match metadata'},
     'download': {'percent': 22, 'label': 'Downloading match video'},
-    'full_match_scan': {'percent': 38, 'label': 'Scanning full match frames'},
-    'event_selection': {'percent': 55, 'label': 'Selecting key review moments'},
-    'event_analysis': {'percent': 72, 'label': 'Classifying kickouts, possession, transitions and scores'},
-    'clip_extraction': {'percent': 82, 'label': 'Creating review clips'},
-    'report': {'percent': 92, 'label': 'Building evidence-led Gaelic football report'},
+    'full_match_scan': {'percent': 36, 'label': 'Scanning full match frames'},
+    'event_selection': {'percent': 52, 'label': 'Selecting tactical review windows'},
+    'event_analysis': {'percent': 72, 'label': 'Building sequences, possession continuity, zones and momentum'},
+    'clip_extraction': {'percent': 84, 'label': 'Creating review clips'},
+    'report': {'percent': 92, 'label': 'Building sequence-led Gaelic football report'},
     'complete': {'percent': 100, 'label': 'Report ready'},
     'failed': {'percent': 100, 'label': 'Analysis failed'}
 }
@@ -52,8 +54,8 @@ def is_veo_url(url): return 'veo.co' in url.lower()
 
 def processing_profile(url):
     if is_veo_url(url):
-        return {'name':'quick-veo','scanIntervalSeconds':2,'eventFramePack':6,'videoFormat':'best[height<=360]/best','clipCount':4}
-    return {'name':'standard','scanIntervalSeconds':1,'eventFramePack':8,'videoFormat':'best[height<=480]/best','clipCount':6}
+        return {'name':'quick-veo','scanIntervalSeconds':2,'eventFramePack':6,'videoFormat':'best[height<=360]/best','candidateCount':24,'classifiedEventCount':12,'clipCount':6,'minEventGapSeconds':75}
+    return {'name':'standard','scanIntervalSeconds':1,'eventFramePack':6,'videoFormat':'best[height<=480]/best','candidateCount':42,'classifiedEventCount':26,'clipCount':8,'minEventGapSeconds':55}
 
 def format_timestamp(seconds):
     seconds = max(0, int(seconds or 0))
@@ -100,7 +102,7 @@ def build_scoreline_rules(f):
     elif f['coachedGoals']<=1 and f['coachedTeamResult']!='won': rules.append(f'{t} had limited goal output; focus can include high-value chance creation and earlier delivery into scoring zones.')
     if f['oppositionGoals']>=3: rules.append(f'{t} conceded {f["oppositionGoals"]} goals; prioritise defensive transition, central goal channels, sweeper cover and recovery shape.')
     elif f['oppositionGoals']<=1: rules.append(f'{t} conceded {f["oppositionGoals"]} goals; frame defensive work as refinement, not collapse.')
-    if f['coachedTeamResult']=='won' and f['margin']>=10: rules.append(f'{t} won comfortably; focus on sustaining strengths and tightening risk areas.')
+    if f['coachedTeamResult']=='won' and f['margin']>=10: rules.append(f'{t} won comfortably; focus on sustaining strengths, game management and tightening risk areas.')
     if f['coachedTeamResult']=='lost' and f['margin']<=3: rules.append(f'{t} lost narrowly; focus on small swing factors and late-game decisions.')
     return '\n'.join('- '+r for r in rules) or '- Apply normal Gaelic football scoreline reasoning.'
 
@@ -121,12 +123,30 @@ def norm_team_colours(raw, facts):
 
 def norm_match_intel(raw):
     raw = raw if isinstance(raw, dict) else {}
-    return {'kickoutOutcome': norm_choice(raw.get('kickoutOutcome'), KICKOUT_OUTCOMES), 'kickoutTeam': str(raw.get('kickoutTeam','unknown'))[:120], 'possessionStart': str(raw.get('possessionStart','unknown'))[:120], 'possessionEnd': str(raw.get('possessionEnd','unknown'))[:120], 'possessionOutcome': norm_choice(raw.get('possessionOutcome'), POSSESSION_OUTCOMES, 'unclear'), 'turnoverTeam': str(raw.get('turnoverTeam','unknown'))[:120], 'transitionOutcome': norm_choice(raw.get('transitionOutcome'), TRANSITION_OUTCOMES), 'transitionTeam': str(raw.get('transitionTeam','unknown'))[:120], 'confidence': norm_choice(raw.get('confidence'), ['low','medium','high'], 'low'), 'evidence': (raw.get('evidence',[]) if isinstance(raw.get('evidence',[]),list) else [])[:8], 'coachingValue': norm_choice(raw.get('coachingValue'), ['low','medium','high'], 'medium'), 'timelineGroup': norm_choice(raw.get('timelineGroup'), ['scores','wides','kickouts','turnovers','transitions','defence','possession','other'], 'other')}
+    return {
+        'kickoutOutcome': norm_choice(raw.get('kickoutOutcome'), KICKOUT_OUTCOMES),
+        'kickoutTeam': str(raw.get('kickoutTeam','unknown'))[:120],
+        'possessionStart': str(raw.get('possessionStart','unknown'))[:120],
+        'possessionEnd': str(raw.get('possessionEnd','unknown'))[:120],
+        'possessionOutcome': norm_choice(raw.get('possessionOutcome'), POSSESSION_OUTCOMES, 'unclear'),
+        'turnoverTeam': str(raw.get('turnoverTeam','unknown'))[:120],
+        'transitionOutcome': norm_choice(raw.get('transitionOutcome'), TRANSITION_OUTCOMES),
+        'transitionTeam': str(raw.get('transitionTeam','unknown'))[:120],
+        'confidence': norm_choice(raw.get('confidence'), ['low','medium','high'], 'low'),
+        'evidence': (raw.get('evidence',[]) if isinstance(raw.get('evidence',[]),list) else [])[:8],
+        'coachingValue': norm_choice(raw.get('coachingValue'), ['low','medium','high'], 'medium'),
+        'timelineGroup': norm_choice(raw.get('timelineGroup'), ['scores','wides','kickouts','turnovers','transitions','defence','possession','other'], 'other'),
+        'fieldZone': norm_choice(raw.get('fieldZone'), FIELD_ZONES),
+        'startZone': norm_choice(raw.get('startZone'), FIELD_ZONES),
+        'endZone': norm_choice(raw.get('endZone'), FIELD_ZONES),
+        'momentumCue': norm_choice(raw.get('momentumCue'), MOMENTUM_LABELS, 'unclear'),
+        'sequenceRole': norm_choice(raw.get('sequenceRole'), ['start','middle','end','standalone','unknown'])
+    }
 
 def fallback_event_candidates(metadata):
-    duration=int(metadata.get('duration') or 0); times=[360,1080,2160,3240] if duration<=0 else [int(duration*f) for f in [0.12,0.25,0.38,0.52,0.68,0.82]]
+    duration=int(metadata.get('duration') or 0); times=[360,1080,2160,3240] if duration<=0 else [int(duration*f) for f in [0.10,0.18,0.26,0.34,0.42,0.50,0.58,0.66,0.74,0.84]]
     labels=['kickout_restart','fast_transition','scoring_chance','breaking_ball','defensive_setup','game_management']
-    return [{'time':f'{format_timestamp(s)} approx','startSecond':max(0,s-15),'endSecond':s+15,'type':labels[i%len(labels)],'reason':'Fallback checkpoint selected from match timeline.','confidence':'low','scoreOutcome':norm_score_outcome({}),'matchIntelligence':norm_match_intel({})} for i,s in enumerate(times)]
+    return [{'time':f'{format_timestamp(s)} approx','startSecond':max(0,s-18),'endSecond':s+24,'type':labels[i%len(labels)],'reason':'Fallback checkpoint selected from match timeline.','confidence':'low','scoreOutcome':norm_score_outcome({}),'matchIntelligence':norm_match_intel({})} for i,s in enumerate(times)]
 
 def download_match_video(url,tmpdir,profile):
     path=os.path.join(tmpdir,'match.mp4')
@@ -142,7 +162,10 @@ def scan_video_frame_differences(video_path, profile, max_scan_seconds=7200):
         while True:
             frame=p.stdout.read(size) if p.stdout else b''
             if not frame or len(frame)<size: break
-            if prev is not None: diffs.append({'second':idx*interval,'difference':round(sum(abs(frame[i]-prev[i]) for i in range(size))/size,2)})
+            if prev is not None:
+                diff=sum(abs(frame[i]-prev[i]) for i in range(size))/size
+                # smooth visual movement into a football-useful intensity score
+                diffs.append({'second':idx*interval,'difference':round(diff,2),'intensity':round(min(100, diff*1.4),2)})
             prev=frame; idx+=1
     finally:
         try:p.kill()
@@ -152,17 +175,28 @@ def scan_video_frame_differences(video_path, profile, max_scan_seconds=7200):
 def classify_event_window(i):
     return ['kickout_restart','fast_transition','scoring_chance','score_or_restart_after_score','breaking_ball','defensive_setup','game_management','turnover','direct_ball_inside'][i%9]
 
-def select_event_candidates_from_differences(differences, max_events=10):
+def select_event_candidates_from_differences(differences, max_events=36, min_gap_seconds=60):
+    if not differences: return []
     selected=[]
-    for item in sorted(differences,key=lambda x:x['difference'],reverse=True):
+    # Mix high-motion windows with regular match checkpoints so the system does not only find camera jumps.
+    sorted_motion=sorted(differences,key=lambda x:x.get('intensity',x.get('difference',0)),reverse=True)
+    for item in sorted_motion:
         second=int(item['second'])
-        if all(abs(second-e['startSecond'])>150 for e in selected):
-            selected.append({'time':f'{format_timestamp(second)} approx','startSecond':max(0,second-20),'endSecond':second+25,'type':classify_event_window(len(selected)),'reason':f'Large visual change detected during full-match scan (frame difference {item["difference"]}).','confidence':'medium'})
+        if all(abs(second-e['startSecond'])>min_gap_seconds for e in selected):
+            selected.append({'time':f'{format_timestamp(second)} approx','startSecond':max(0,second-22),'endSecond':second+32,'type':classify_event_window(len(selected)),'reason':f'Tactical scan window selected from motion/intensity change ({item.get("intensity", item.get("difference"))}).','confidence':'medium'})
         if len(selected)>=max_events: break
+    if len(selected) < max_events and differences:
+        duration=max(int(d.get('second',0)) for d in differences)
+        step=max(75, duration//max_events) if duration else 120
+        second=step
+        while len(selected)<max_events and second<duration:
+            if all(abs(second-e['startSecond'])>min_gap_seconds for e in selected):
+                selected.append({'time':f'{format_timestamp(second)} approx','startSecond':max(0,second-22),'endSecond':second+32,'type':classify_event_window(len(selected)),'reason':'Regular tactical checkpoint added to improve match coverage.','confidence':'low'})
+            second+=step
     return sorted(selected,key=lambda x:x['startSecond'])
 
 def extract_event_frames(video_path,event,tmpdir,event_index,profile):
-    count=int(profile.get('eventFramePack',8)); start=max(0,int(event.get('startSecond',0))); end=max(start+1,int(event.get('endSecond',start+30))); duration=max(1,end-start); fps=max(0.1,count/duration)
+    count=int(profile.get('eventFramePack',6)); start=max(0,int(event.get('startSecond',0))); end=max(start+1,int(event.get('endSecond',start+30))); duration=max(1,end-start); fps=max(0.1,count/duration)
     pattern=os.path.join(tmpdir,f'event_{event_index}_%02d.jpg')
     subprocess.run(['ffmpeg','-y','-ss',str(start),'-i',video_path,'-t',str(duration),'-vf',f'fps={fps},scale=768:-1','-frames:v',str(count),pattern],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
     return sorted([os.path.join(tmpdir,f) for f in os.listdir(tmpdir) if f.startswith(f'event_{event_index}_') and f.endswith('.jpg')])[:count]
@@ -178,7 +212,7 @@ def extract_scoreboard_crops(video_path,event,tmpdir,event_index):
 
 def extract_event_clip(video_path,event,job_id,event_index):
     if not job_id: return None
-    d=os.path.join(CLIP_ROOT,job_id); os.makedirs(d,exist_ok=True); start=max(0,int(event.get('startSecond',0))); end=max(start+1,int(event.get('endSecond',start+30))); dur=min(45,max(8,end-start)); cid=f'clip_{event_index:02d}'; out=os.path.join(d,f'{cid}.mp4')
+    d=os.path.join(CLIP_ROOT,job_id); os.makedirs(d,exist_ok=True); start=max(0,int(event.get('startSecond',0))); end=max(start+1,int(event.get('endSecond',start+30))); dur=min(60,max(12,end-start)); cid=f'clip_{event_index:02d}'; out=os.path.join(d,f'{cid}.mp4')
     subprocess.run(['ffmpeg','-y','-ss',str(start),'-i',video_path,'-t',str(dur),'-vf','scale=640:-2','-c:v','libx264','-preset','veryfast','-crf','30','-an','-movflags','+faststart',out],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
     return None if not os.path.exists(out) else {'clipId':cid,'filename':f'{cid}.mp4','startSecond':start,'endSecond':start+dur,'duration':dur,'time':f'{format_timestamp(start)}–{format_timestamp(start+dur)} approx','type':event.get('type','review clip'),'downloadPath':f'/analysis-jobs/{job_id}/clips/{cid}'}
 
@@ -209,9 +243,9 @@ Return JSON only with keys:
 eventType(one of {EVENT_TYPES}), confidence(low|medium|high), coachingValue(low|medium|high), keepForReport(boolean), visibleCues(array), coachingReason, visualSummary,
 scoreboard object,
 scoreOutcome: {{outcome(one of {SCORE_OUTCOMES}), confidence, evidence, reasoning, cues}},
-matchIntelligence: {{kickoutOutcome(one of {KICKOUT_OUTCOMES}), kickoutTeam(team/unknown), possessionStart(team/colour/unknown), possessionEnd(team/colour/unknown), possessionOutcome(one of {POSSESSION_OUTCOMES}), turnoverTeam(team/unknown), transitionOutcome(one of {TRANSITION_OUTCOMES}), transitionTeam(team/unknown), confidence(low|medium|high), evidence(array), coachingValue(low|medium|high), timelineGroup(scores|wides|kickouts|turnovers|transitions|defence|possession|other)}},
+matchIntelligence: {{kickoutOutcome(one of {KICKOUT_OUTCOMES}), kickoutTeam(team/unknown), possessionStart(team/colour/unknown), possessionEnd(team/colour/unknown), possessionOutcome(one of {POSSESSION_OUTCOMES}), turnoverTeam(team/unknown), transitionOutcome(one of {TRANSITION_OUTCOMES}), transitionTeam(team/unknown), confidence(low|medium|high), evidence(array), coachingValue(low|medium|high), timelineGroup(scores|wides|kickouts|turnovers|transitions|defence|possession|other), fieldZone(one of {FIELD_ZONES}), startZone(one of {FIELD_ZONES}), endZone(one of {FIELD_ZONES}), momentumCue(one of {MOMENTUM_LABELS}), sequenceRole(start|middle|end|standalone|unknown)}},
 possessionColour("colour|unknown"), likelyTeamInPossession("team name|unknown").
-Rules: be conservative. Only assign team ownership if colour evidence and frames support it. Kickout won/lost means the team taking the kickout retained/lost the next phase. Breaking ball means aerial/scrappy second possession. Transition success means the attack clearly creates a chance, reaches scoring zone, slows, is forced back, or turns over. Use unknown if unclear.'''}]
+Rules: be conservative. Only assign team ownership if colour evidence and frames support it. Track football meaning over the whole window: where it starts, where it ends, whether it is a kickout, possession chain, turnover, transition, defensive setup or scoring phase. Use field zones: defensive_third, middle_third, attacking_third, scoring_zone, channels. Use unknown if unclear.'''}]
     content += image_content_from_paths(frame_paths)
     res=client.chat.completions.create(model='gpt-4o-mini',response_format={'type':'json_object'},messages=[{'role':'user','content':content}])
     p=parse_json_safely(res.choices[0].message.content or '{}') or {}
@@ -229,20 +263,21 @@ def build_event_candidates(url, metadata, profile, client=None, job_id=None, fac
             set_job_stage(job_id,'download','Downloading match video for full-match scan'); video_path=download_match_video(url,tmpdir,profile)
             if not video_path: return fallback_event_candidates(metadata)
             set_job_stage(job_id,'full_match_scan','Extracting low-res scan frames and comparing movement changes'); diffs=scan_video_frame_differences(video_path,profile)
-            set_job_stage(job_id,'event_selection','Selecting strongest candidate review windows'); candidates=select_event_candidates_from_differences(diffs) or fallback_event_candidates(metadata)
+            set_job_stage(job_id,'event_selection','Selecting dense tactical review windows'); candidates=select_event_candidates_from_differences(diffs, int(profile.get('candidateCount',36)), int(profile.get('minEventGapSeconds',60))) or fallback_event_candidates(metadata)
             if not client: return candidates
-            set_job_stage(job_id,'event_analysis','Detecting team colours, kickouts, possession, transitions and score outcomes')
-            enriched=[]; clip_count=int(profile.get('clipCount',6)); first_frames=[]; facts=facts or build_match_facts({}); cached_colours=None
-            for i,event in enumerate(candidates[:clip_count], start=1):
+            set_job_stage(job_id,'event_analysis','Classifying dense windows for possession, zones, momentum and score outcomes')
+            enriched=[]; classified_count=int(profile.get('classifiedEventCount',24)); clip_count=int(profile.get('clipCount',8)); first_frames=[]; facts=facts or build_match_facts({}); cached_colours=None
+            for i,event in enumerate(candidates[:classified_count], start=1):
                 frames=extract_event_frames(video_path,event,tmpdir,i,profile)
-                if frames and len(first_frames)<8: first_frames += frames[:2]
+                if frames and len(first_frames)<10: first_frames += frames[:2]
                 if not cached_colours or cached_colours.get('confidence') == 'low': cached_colours=detect_team_colours(client, first_frames or frames, facts)
                 scoreboard_ocr=read_scoreboard_ocr(client, extract_scoreboard_crops(video_path,event,tmpdir,i))
                 classification=classify_event_frames(client,frames,event,scoreboard_ocr,cached_colours,facts)
                 if not classification.get('keepForReport') and classification.get('coachingValue')=='low': continue
-                et=classification.get('eventType',event.get('type')); clip=extract_event_clip(video_path,{**event,'type':et},job_id,i)
+                et=classification.get('eventType',event.get('type'))
+                clip=extract_event_clip(video_path,{**event,'type':et},job_id,i) if i <= clip_count else None
                 enriched.append({**event,'type':et,'classification':classification,'visualAnalysis':classification.get('visualSummary',''),'scoreboard':classification.get('scoreboard'),'scoreOutcome':classification.get('scoreOutcome'),'teamColours':classification.get('teamColours'),'matchIntelligence':classification.get('matchIntelligence'),'possessionColour':classification.get('possessionColour'),'likelyTeamInPossession':classification.get('likelyTeamInPossession'),'framesAnalysed':len(frames),'clip':clip})
-            return enriched + candidates[clip_count:]
+            return enriched + candidates[classified_count:]
     except Exception:
         return fallback_event_candidates(metadata)
 
@@ -259,6 +294,8 @@ def event_quality(e):
     if mi.get('kickoutOutcome') not in [None,'unknown','not_kickout']: score+=2
     if mi.get('transitionOutcome') not in [None,'unknown','not_transition']: score+=2
     if mi.get('possessionOutcome') in ['turnover_for','turnover_against','won_back','lost']: score+=2
+    if mi.get('fieldZone') not in [None,'unknown']: score+=1
+    if e.get('likelyTeamInPossession') not in [None,'unknown','']: score+=1
     if e.get('clip'): score+=1
     return score
 
@@ -272,32 +309,118 @@ def build_timeline(events):
         elif mi.get('kickoutOutcome') not in [None,'not_kickout','unknown']: group='kickouts'
         elif mi.get('possessionOutcome') in ['turnover_for','turnover_against','lost','won_back']: group='turnovers'
         elif mi.get('transitionOutcome') not in [None,'not_transition','unknown']: group='transitions'
-        item={'time':e.get('time'),'eventType':e.get('type'),'scoreOutcome':so.get('outcome','unknown'),'kickoutOutcome':mi.get('kickoutOutcome','unknown'),'possessionOutcome':mi.get('possessionOutcome','unclear'),'transitionOutcome':mi.get('transitionOutcome','unknown'),'teamCue':e.get('likelyTeamInPossession','unknown'),'summary':e.get('visualAnalysis',''),'clip':e.get('clip')}
+        item={'time':e.get('time'),'startSecond':e.get('startSecond'),'eventType':e.get('type'),'scoreOutcome':so.get('outcome','unknown'),'kickoutOutcome':mi.get('kickoutOutcome','unknown'),'possessionOutcome':mi.get('possessionOutcome','unclear'),'transitionOutcome':mi.get('transitionOutcome','unknown'),'fieldZone':mi.get('fieldZone','unknown'),'teamCue':e.get('likelyTeamInPossession','unknown'),'summary':e.get('visualAnalysis',''),'clip':e.get('clip')}
         groups[group if group in groups else 'other'].append(item)
     return groups
 
-def aggregate_evidence(events, facts):
-    evidence = {
-        'eventsAnalysed': len([e for e in events if isinstance(e, dict)]),
-        'highValueEvents': 0,
-        'surfacedEvents': 0,
-        'scoresDetected': 0,
-        'widesDetected': 0,
-        'savesDetected': 0,
-        'blockedShotsDetected': 0,
-        'kickoutRetained': 0,
-        'kickoutLost': 0,
-        'kickoutContested': 0,
-        'breakingBallWinsOrContests': 0,
-        'turnoversFor': 0,
-        'turnoversAgainst': 0,
-        'transitionPositive': 0,
-        'transitionNegative': 0,
-        'clipsAvailable': 0,
-        'teamColourConfidence': 'low',
-        'evidenceBullets': [],
-        'coachingTriggers': []
-    }
+def build_tactical_sequences(events):
+    usable=sorted([e for e in events if isinstance(e,dict) and event_quality(e)>=3], key=lambda x:int(x.get('startSecond',0)))
+    sequences=[]; current=None
+    for e in usable:
+        mi=e.get('matchIntelligence',{}) or {}; so=e.get('scoreOutcome',{}) or {}
+        team=e.get('likelyTeamInPossession') or mi.get('transitionTeam') or mi.get('kickoutTeam') or 'unknown'
+        zone=mi.get('fieldZone','unknown'); outcome='unknown'
+        if so.get('outcome') not in [None,'unknown']: outcome=so.get('outcome')
+        elif mi.get('transitionOutcome') not in [None,'unknown','not_transition']: outcome=mi.get('transitionOutcome')
+        elif mi.get('possessionOutcome') not in [None,'unclear']: outcome=mi.get('possessionOutcome')
+        elif mi.get('kickoutOutcome') not in [None,'unknown','not_kickout']: outcome=mi.get('kickoutOutcome')
+        phase={'time':e.get('time'),'startSecond':int(e.get('startSecond',0)),'endSecond':int(e.get('endSecond',0)),'type':e.get('type'),'team':team,'zone':zone,'outcome':outcome,'summary':e.get('visualAnalysis',''),'clip':e.get('clip')}
+        if current and phase['startSecond'] - current['endSecond'] <= 95 and (team == current['likelyTeam'] or team == 'unknown' or current['likelyTeam'] == 'unknown'):
+            current['phases'].append(phase); current['endSecond']=max(current['endSecond'],phase['endSecond'])
+            if current['likelyTeam']=='unknown' and team!='unknown': current['likelyTeam']=team
+            if zone!='unknown': current['zones'].append(zone)
+            if outcome!='unknown': current['outcomes'].append(outcome)
+        else:
+            if current: sequences.append(current)
+            current={'sequenceId':len(sequences)+1,'startSecond':phase['startSecond'],'endSecond':phase['endSecond'],'likelyTeam':team,'phases':[phase],'zones':[zone] if zone!='unknown' else [],'outcomes':[outcome] if outcome!='unknown' else []}
+    if current: sequences.append(current)
+    for s in sequences:
+        s['time']=f"{format_timestamp(s['startSecond'])}–{format_timestamp(s['endSecond'])} approx"
+        types=[p['type'] for p in s['phases']]
+        s['phaseChain']=' → '.join(types[:5])
+        s['dominantZone']=max(set(s['zones']), key=s['zones'].count) if s['zones'] else 'unknown'
+        s['finalOutcome']=s['outcomes'][-1] if s['outcomes'] else 'unknown'
+        s['coachingSummary']=sequence_summary(s)
+    return sequences[:12]
+
+def sequence_summary(sequence):
+    chain=sequence.get('phaseChain','sequence')
+    outcome=sequence.get('finalOutcome','unknown')
+    zone=sequence.get('dominantZone','unknown')
+    if outcome in ['point','goal','created_score']:
+        return f"Positive attacking chain through {zone}; review how the sequence developed into a scoring outcome."
+    if outcome in ['wide','save','blocked','created_chance']:
+        return f"Chance sequence through {zone}; useful for reviewing shot selection and support around the ball."
+    if 'kickout_restart' in chain:
+        return f"Restart chain through {zone}; review first and second possession after the kickout."
+    if outcome in ['turnover_for','won_back'] or 'turnover' in chain:
+        return f"Turnover chain through {zone}; review pressure trigger and next-action decision."
+    if 'fast_transition' in chain:
+        return f"Transition chain through {zone}; review speed of support and whether the attack stayed direct."
+    return f"Tactical sequence through {zone}; review spacing, support and decision-making."
+
+def build_possession_continuity(sequences, facts):
+    coached=facts.get('coachedTeam','Team A')
+    continuity={'coachedSequences':0,'oppositionSequences':0,'unknownSequences':0,'longestCoachedSpellSeconds':0,'longestOppositionSpellSeconds':0,'possessionNotes':[]}
+    for s in sequences:
+        duration=max(0,int(s.get('endSecond',0))-int(s.get('startSecond',0)))
+        team=s.get('likelyTeam','unknown')
+        if team == coached:
+            continuity['coachedSequences']+=1; continuity['longestCoachedSpellSeconds']=max(continuity['longestCoachedSpellSeconds'],duration)
+        elif team and team!='unknown':
+            continuity['oppositionSequences']+=1; continuity['longestOppositionSpellSeconds']=max(continuity['longestOppositionSpellSeconds'],duration)
+        else:
+            continuity['unknownSequences']+=1
+    if continuity['coachedSequences'] > continuity['oppositionSequences']:
+        continuity['possessionNotes'].append(f"More classified possession sequences were linked to {coached} than the opposition.")
+    elif continuity['oppositionSequences'] > continuity['coachedSequences']:
+        continuity['possessionNotes'].append(f"More classified possession sequences were linked to the opposition; check territory and counter-control.")
+    else:
+        continuity['possessionNotes'].append('Possession ownership remains mixed or unclear from the extracted sequence evidence.')
+    return continuity
+
+def build_field_zone_summary(events, sequences):
+    zones={z:0 for z in FIELD_ZONES}
+    for e in events:
+        if not isinstance(e,dict): continue
+        z=(e.get('matchIntelligence',{}) or {}).get('fieldZone','unknown')
+        zones[z if z in zones else 'unknown']+=1
+    sequence_zones={}
+    for s in sequences:
+        z=s.get('dominantZone','unknown'); sequence_zones[z]=sequence_zones.get(z,0)+1
+    top=sorted(sequence_zones.items(), key=lambda x:x[1], reverse=True)[:3]
+    return {'eventZoneCounts':zones,'sequenceZoneCounts':sequence_zones,'topSequenceZones':top}
+
+def build_momentum_phases(sequences, facts):
+    phases=[]
+    if not sequences: return phases
+    bucket_seconds=600
+    buckets={}
+    for s in sequences:
+        bucket=int(s.get('startSecond',0))//bucket_seconds
+        b=buckets.setdefault(bucket, {'startSecond':bucket*bucket_seconds,'endSecond':bucket*bucket_seconds+bucket_seconds,'positive':0,'negative':0,'scores':0,'chances':0,'turnovers':0,'teams':{}})
+        outcome=s.get('finalOutcome','unknown'); team=s.get('likelyTeam','unknown')
+        b['teams'][team]=b['teams'].get(team,0)+1
+        if outcome in ['point','goal','created_score','created_chance','carried_to_scoring_zone','short_retained','won_clean','won_breaking_ball','turnover_for','won_back']:
+            b['positive']+=1
+        if outcome in ['wide','save','blocked','lost','turnover_against','turned_over','conceded_counter','lost_clean','lost_breaking_ball','pressed_into_turnover']:
+            b['negative']+=1
+        if outcome in ['point','goal','created_score']: b['scores']+=1
+        if outcome in ['created_chance','wide','save','blocked']: b['chances']+=1
+        if outcome in ['turnover_for','turnover_against','won_back','lost','turned_over']: b['turnovers']+=1
+    for b in sorted(buckets.values(), key=lambda x:x['startSecond']):
+        label='settled_phase'
+        if b['scores']>=2: label='scoring_burst'
+        elif b['positive']>=3 and b['positive']>b['negative']: label='dominant_spell'
+        elif b['negative']>=3 and b['negative']>b['positive']: label='pressure_spell'
+        elif b['turnovers']>=2: label='pressure_spell'
+        dominant_team=max(b['teams'], key=b['teams'].get) if b['teams'] else 'unknown'
+        phases.append({'time':f"{format_timestamp(b['startSecond'])}–{format_timestamp(b['endSecond'])} approx",'label':label,'dominantTeam':dominant_team,'positiveCues':b['positive'],'negativeCues':b['negative'],'scoreCues':b['scores'],'chanceCues':b['chances'],'turnoverCues':b['turnovers']})
+    return phases
+
+def aggregate_evidence(events, facts, sequences=None, possession=None, zones=None, momentum=None):
+    sequences=sequences or []; possession=possession or {}; zones=zones or {}; momentum=momentum or []
+    evidence = {'eventsAnalysed': len([e for e in events if isinstance(e, dict)]),'highValueEvents': 0,'surfacedEvents': 0,'scoresDetected': 0,'widesDetected': 0,'savesDetected': 0,'blockedShotsDetected': 0,'kickoutRetained': 0,'kickoutLost': 0,'kickoutContested': 0,'breakingBallWinsOrContests': 0,'turnoversFor': 0,'turnoversAgainst': 0,'transitionPositive': 0,'transitionNegative': 0,'clipsAvailable': 0,'teamColourConfidence': 'low','sequenceCount': len(sequences),'possessionContinuity': possession,'fieldZoneSummary': zones,'momentumPhases': momentum,'evidenceBullets': [],'coachingTriggers': []}
     for e in events:
         if not isinstance(e, dict): continue
         q = event_quality(e)
@@ -322,6 +445,8 @@ def aggregate_evidence(events, facts):
         tr = mi.get('transitionOutcome')
         if tr in ['created_score','created_chance','carried_to_scoring_zone']: evidence['transitionPositive'] += 1
         elif tr in ['slowed_down','forced_backwards','turned_over','conceded_counter']: evidence['transitionNegative'] += 1
+    if evidence['sequenceCount']:
+        evidence['evidenceBullets'].append(f"Built {evidence['sequenceCount']} tactical sequence(s) from classified review windows.")
     if evidence['kickoutRetained'] > evidence['kickoutLost']:
         evidence['evidenceBullets'].append(f"Kickout platform looked positive in {evidence['kickoutRetained']} classified restart phase(s).")
     elif evidence['kickoutLost'] > evidence['kickoutRetained']:
@@ -341,15 +466,19 @@ def aggregate_evidence(events, facts):
     if facts.get('coachedGoals',0) >= 5:
         evidence['coachingTriggers'].append('protect_goal_threat_strength')
     if not evidence['evidenceBullets']:
-        evidence['evidenceBullets'].append('Limited high-confidence event evidence surfaced; report should stay conservative and scoreline-led.')
+        evidence['evidenceBullets'].append('Limited high-confidence sequence evidence surfaced; report should stay conservative and scoreline-led.')
     return evidence
 
-def build_report_prompt(coached, opposition, facts, rules, metadata, events, timeline, match_evidence, notes, profile):
+def build_report_prompt(coached, opposition, facts, rules, metadata, events, timeline, sequences, possession_continuity, field_zones, momentum_phases, match_evidence, notes, profile):
     return f'''You are an elite Gaelic football performance analyst working directly for {coached}.
-Create a short, evidence-led Gaelic football manager debrief for {coached}. Build conclusions from MATCH EVIDENCE first, then from scoreline. Do not write generic prose.
+Create a short, sequence-led Gaelic football manager debrief for {coached}. Build conclusions from TACTICAL SEQUENCES, POSSESSION CONTINUITY, FIELD ZONES and MOMENTUM PHASES first, then from scoreline. Do not write generic prose.
 MATCH FACTS: {facts}
 SCORELINE RULES: {rules}
 VIDEO METADATA: {metadata}
+TACTICAL SEQUENCES: {sequences}
+POSSESSION CONTINUITY: {possession_continuity}
+FIELD ZONE SUMMARY: {field_zones}
+MOMENTUM PHASES: {momentum_phases}
 MATCH EVIDENCE COUNTERS: {match_evidence}
 CLASSIFIED EVENTS: {events}
 KEY MOMENTS TIMELINE: {timeline}
@@ -358,57 +487,58 @@ PROFILE: {profile}
 Rules:
 - This is Gaelic football. Use kickouts, breaking ball, middle third, runners from deep, direct ball inside, D protection, counter-press, kick-pass threat, shot selection, game management.
 - Do NOT surface repeated unknown outcomes. If an event is unclear, omit it or say evidence was limited.
-- Prioritise counted evidence: kickout retained/lost, turnovers, transition positive/negative, shot outcomes, clips available.
+- Prioritise sequences over isolated moments. A good row should read like: kickout → middle-third contest → direct attack → shot outcome.
+- Use field zones: defensive third, middle third, attacking third, scoring zone, central channel, wide channel.
 - If {coached} scored {facts['coachedGoals']} goals, treat goal threat as a strength, not a weakness.
 - Team colour and possession evidence is approximate; never overclaim ownership if unclear.
 - Never contradict final scoreline or invent scorers.
-- Reduce waffle. Every row must contain a specific tactical observation or evidence cue.
+- Reduce waffle. Every row must contain a specific tactical observation or sequence cue.
 Return this exact markdown structure:
 # {coached} – Match Snapshot
 | Item | Detail |
 |---|---|
 | Scoreline | {facts['scoreline']} |
 | Result | {coached} {facts['coachedTeamResult']} by {facts['margin']} point(s) |
-| Core Story | One direct evidence-led Gaelic football sentence. |
+| Core Story | One direct sequence-led Gaelic football sentence. |
 
 # {coached} – Evidence Summary
 | Evidence Area | What The Analysis Found |
 |---|---|
-| Review Windows | Use eventsAnalysed, surfacedEvents and clipsAvailable from MATCH EVIDENCE COUNTERS |
+| Review Windows | Use eventsAnalysed, surfacedEvents, sequenceCount and clipsAvailable from MATCH EVIDENCE COUNTERS |
+| Possession Continuity | Use POSSESSION CONTINUITY, but avoid false certainty |
+| Field Zones | Use FIELD ZONE SUMMARY and top sequence zones |
+| Momentum Phases | Use MOMENTUM PHASES if useful; otherwise say no clear swing detected |
 | Kickout / Restart | Specific count-led finding from kickoutRetained, kickoutLost, kickoutContested |
-| Turnover Battle | Specific count-led finding from turnoversFor and turnoversAgainst |
-| Transition Impact | Specific count-led finding from transitionPositive and transitionNegative |
-| Shot Outcomes | Specific count-led finding from scoresDetected, widesDetected, savesDetected and blockedShotsDetected |
+
+# {coached} – Tactical Sequences Worth Reviewing
+| Time | Sequence | Zone | Outcome | Coaching Note |
+|---|---|---|---|---|
+| Use only useful tactical sequences. | phaseChain | dominantZone | finalOutcome | coachingSummary |
 
 # {coached} – Match-Deciding Factor
-One blunt Gaelic football paragraph, max 45 words. Tie it to scoreline plus strongest evidence counters.
+One blunt Gaelic football paragraph, max 45 words. Tie it to scoreline plus strongest sequence/momentum evidence.
 
 # {coached} – Estimated Key Match Stats
 | Metric | {coached} | {opposition} |
 |---|---|---|
-| Goal Threat | {facts['coachedGoals']} goals + evidence-led tactical label + ✅/⚠️/❌ | {facts['oppositionGoals']} goals + evidence-led tactical label + ✅/⚠️/❌ |
+| Goal Threat | {facts['coachedGoals']} goals + sequence/zone label + ✅/⚠️/❌ | {facts['oppositionGoals']} goals + sequence/zone label + ✅/⚠️/❌ |
 | Point Output | {facts['coachedPoints']} points + tactical label + ✅/⚠️/❌ | {facts['oppositionPoints']} points + tactical label + ✅/⚠️/❌ |
 | Kickout Platform | count-led restart finding + ✅/⚠️/❌ | count-led restart finding + ✅/⚠️/❌ |
 | Breaking Ball | use breaking-ball/kickout cues + ✅/⚠️/❌ | use breaking-ball/kickout cues + ✅/⚠️/❌ |
 | Turnover Impact | use turnover counts + ✅/⚠️/❌ | use turnover counts + ✅/⚠️/❌ |
-| Transition Threat | use transition counts + ✅/⚠️/❌ | use transition counts + ✅/⚠️/❌ |
+| Transition Threat | use transition counts and sequence evidence + ✅/⚠️/❌ | use transition counts and sequence evidence + ✅/⚠️/❌ |
 
 # {coached} – Key Moments Timeline
 | Time | Category | Outcome | Team / Colour Cue | Why It Matters |
 |---|---|---|---|---|
-| Only include useful classified timeline moments. Do not include rows with all unknowns. | scores/wides/kickouts/turnovers/transitions | outcome | team/colour cue or evidence limited | specific coaching reason |
-
-# {coached} – Review Clips
-| Clip | Event Type | Outcome | Why Review It |
-|---|---|---|---|
-| Use available clip links from classified events only | event type | score/kickout/turnover/transition outcome | one specific coaching reason |
+| Only include useful classified timeline moments or sequence moments. Do not include rows with all unknowns. | scores/wides/kickouts/turnovers/transitions | outcome | team/colour cue or evidence limited | specific coaching reason |
 
 # {coached} – Main Focus Areas Going Forward
 | Priority | Evidence Trigger | Coaching Action |
 |---|---|---|
-| Specific Gaelic football focus 1 | use match_evidence counter/trigger | practical session action |
-| Specific Gaelic football focus 2 | use match_evidence counter/trigger | practical session action |
-| Specific Gaelic football focus 3 | use match_evidence counter/trigger | practical session action |
+| Specific Gaelic football focus 1 | use sequence/momentum/evidence trigger | practical session action |
+| Specific Gaelic football focus 2 | use sequence/momentum/evidence trigger | practical session action |
+| Specific Gaelic football focus 3 | use sequence/momentum/evidence trigger | practical session action |
 
 # {coached} – Key Manager Takeaway
 One short quote, max 55 words. Must sound like a Gaelic football manager after video review, not a generic AI summary.'''
@@ -418,12 +548,18 @@ def generate_analysis(request, job_id=None):
     if not api_key: raise HTTPException(status_code=500, detail='OPENAI_API_KEY is missing')
     client=OpenAI(api_key=api_key); profile=processing_profile(request.url); facts=build_match_facts(request.matchContext or {})
     set_job_stage(job_id,'metadata','Reading video title, duration and match metadata'); metadata=extract_video_metadata(request.url)
-    events=build_event_candidates(request.url, metadata, profile, client, job_id, facts); timeline=build_timeline(events); match_evidence=aggregate_evidence(events, facts)
+    events=build_event_candidates(request.url, metadata, profile, client, job_id, facts)
+    timeline=build_timeline(events)
+    sequences=build_tactical_sequences(events)
+    possession_continuity=build_possession_continuity(sequences, facts)
+    field_zones=build_field_zone_summary(events, sequences)
+    momentum_phases=build_momentum_phases(sequences, facts)
+    match_evidence=aggregate_evidence(events, facts, sequences, possession_continuity, field_zones, momentum_phases)
     set_job_stage(job_id,'clip_extraction','Review clips created for selected moments')
     coached=facts['coachedTeam']; opposition=facts['teamB'] if facts['teamA']==coached else facts['teamA']
-    prompt=build_report_prompt(coached,opposition,facts,build_scoreline_rules(facts),metadata,events,timeline,match_evidence,request.notes,profile)
-    set_job_stage(job_id,'report','Building evidence-led manager debrief report')
-    res=client.chat.completions.create(model='gpt-4o-mini',messages=[{'role':'system','content':'You produce concise evidence-led Gaelic football manager dashboards. You use counted tactical evidence before prose and avoid generic analysis.'},{'role':'user','content':prompt}])
+    prompt=build_report_prompt(coached,opposition,facts,build_scoreline_rules(facts),metadata,events,timeline,sequences,possession_continuity,field_zones,momentum_phases,match_evidence,request.notes,profile)
+    set_job_stage(job_id,'report','Building sequence-led manager debrief report')
+    res=client.chat.completions.create(model='gpt-4o-mini',messages=[{'role':'system','content':'You produce concise sequence-led Gaelic football manager dashboards. You use tactical sequences, possession continuity, field zones and momentum phases before prose and avoid generic analysis.'},{'role':'user','content':prompt}])
     clips=[e.get('clip') for e in events if isinstance(e,dict) and e.get('clip')]
     classifications=[e.get('classification') for e in events if isinstance(e,dict) and e.get('classification')]
     team_colours=[e.get('teamColours') for e in events if isinstance(e,dict) and e.get('teamColours')]
@@ -431,7 +567,7 @@ def generate_analysis(request, job_id=None):
     kickouts=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('kickoutOutcome') not in [None,'not_kickout','unknown']]
     turnovers=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('possessionOutcome') in ['turnover_for','turnover_against','lost','won_back']]
     transitions=[e for e in events if isinstance(e,dict) and e.get('matchIntelligence',{}).get('transitionOutcome') not in [None,'not_transition','unknown']]
-    return {'status':'complete','mode':'worker','analysis':res.choices[0].message.content,'videoMetadata':metadata,'matchFacts':facts,'processingProfile':profile['name'],'matchEvidence':match_evidence,'eventCandidates':events,'eventClassifications':classifications,'teamColours':team_colours,'scoringCues':scoring,'kickoutEvents':kickouts,'turnoverEvents':turnovers,'transitionEvents':transitions,'keyMomentsTimeline':timeline,'clips':clips}
+    return {'status':'complete','mode':'worker','analysis':res.choices[0].message.content,'videoMetadata':metadata,'matchFacts':facts,'processingProfile':profile['name'],'matchEvidence':match_evidence,'tacticalSequences':sequences,'possessionContinuity':possession_continuity,'fieldZoneSummary':field_zones,'momentumPhases':momentum_phases,'eventCandidates':events,'eventClassifications':classifications,'teamColours':team_colours,'scoringCues':scoring,'kickoutEvents':kickouts,'turnoverEvents':turnovers,'transitionEvents':transitions,'keyMomentsTimeline':timeline,'clips':clips}
 
 def run_analysis_job(job_id, request):
     try:
