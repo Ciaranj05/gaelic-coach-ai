@@ -1,5 +1,4 @@
 import Link from 'next/link'
-import UploadCard from '@/components/upload-card'
 import YouTubeAnalyser from '@/components/youtube-analyser'
 
 export default function HomePage() {
@@ -30,7 +29,7 @@ export default function HomePage() {
           <div className="grid gap-16 py-20 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:py-28">
             <div>
               <div className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 shadow-sm">
-                AI-powered analysis for Gaelic football and hurling
+                Link-based AI analysis for Gaelic football and hurling
               </div>
 
               <h1 className="mt-8 max-w-4xl text-5xl font-black leading-[0.95] tracking-tight text-slate-950 sm:text-7xl">
@@ -46,7 +45,7 @@ export default function HomePage() {
                   href="#analyse"
                   className="rounded-2xl bg-slate-950 px-6 py-4 font-semibold text-white shadow-xl shadow-slate-900/15 transition hover:-translate-y-0.5 hover:bg-slate-800"
                 >
-                  Analyse a Match
+                  Analyse a Match Link
                 </a>
 
                 <Link
@@ -59,15 +58,15 @@ export default function HomePage() {
 
               <div className="mt-12 grid max-w-2xl grid-cols-3 gap-4">
                 <div className="rounded-3xl border border-white bg-white/70 p-4 shadow-sm backdrop-blur">
-                  <p className="text-2xl font-black">60</p>
+                  <p className="text-2xl font-black">20–60</p>
                   <p className="mt-1 text-xs font-medium text-slate-500">sampled frames</p>
                 </div>
                 <div className="rounded-3xl border border-white bg-white/70 p-4 shadow-sm backdrop-blur">
                   <p className="text-2xl font-black">AI</p>
-                  <p className="mt-1 text-xs font-medium text-slate-500">vision + transcript</p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">vision + context</p>
                 </div>
                 <div className="rounded-3xl border border-white bg-white/70 p-4 shadow-sm backdrop-blur">
-                  <p className="text-2xl font-black">PDF</p>
+                  <p className="text-2xl font-black">HTML</p>
                   <p className="mt-1 text-xs font-medium text-slate-500">report ready</p>
                 </div>
               </div>
@@ -75,7 +74,6 @@ export default function HomePage() {
 
             <div id="analyse" className="space-y-6">
               <YouTubeAnalyser />
-              <UploadCard />
             </div>
           </div>
         </div>
@@ -89,9 +87,9 @@ export default function HomePage() {
 
         <div className="mt-10 grid gap-5 md:grid-cols-3">
           {[
-            ['1', 'Submit Match', 'Paste a YouTube, Veo or Vimeo link and add optional coach notes.'],
-            ['2', 'AI Reviews Context', 'The worker extracts audio, frames, metadata and commentary signals.'],
-            ['3', 'Coach Dashboard', 'Receive tactical themes, training priorities and a downloadable report.']
+            ['1', 'Submit Match Link', 'Paste a YouTube, Veo or Vimeo link and add match context.'],
+            ['2', 'AI Reviews Context', 'The worker samples frames, extracts metadata and reviews tactical evidence.'],
+            ['3', 'Download Report', 'Receive tactical themes, training priorities and a premium downloadable report.']
           ].map(([step, title, body]) => (
             <div key={title} className="rounded-[2rem] border border-white bg-white/80 p-7 shadow-sm shadow-slate-200/70 backdrop-blur-xl">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-950 text-sm font-black text-white">
@@ -111,7 +109,7 @@ export default function HomePage() {
               <p className="text-sm font-bold uppercase tracking-[0.25em] text-emerald-300">Platform Preview</p>
               <h2 className="mt-4 text-4xl font-black tracking-tight">Built for modern Gaelic coaches.</h2>
               <p className="mt-5 text-sm leading-7 text-slate-300">
-                Move beyond raw AI text. Turn footage into executive summaries, tactical cards, training plans, timelines and team learning moments.
+                Move beyond raw AI text. Turn footage links into executive summaries, tactical cards, training plans, timelines and team learning moments.
               </p>
             </div>
 
