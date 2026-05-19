@@ -56,6 +56,70 @@ def extract_video_metadata(url: str):
         }
 
 
+def build_match_facts(match_context: dict):
+    team_a = match_context.get('teamA', 'Team A')
+    team_b = match_context.get('teamB', 'Team B')
+    coached_team = match_context.get('coachedTeam', team_a)
+
+    a_goals = int(match_context.get('teamAGoals') or 0)
+    a_points = int(match_context.get('teamAPoints') or 0)
+    b_goals = int(match_context.get('teamBGoals') or 0)
+    b_points = int(match_context.get('teamBPoints') or 0)
+
+    a_total = (a_goals * 3) + a_points
+    b_total = (b_goals * 3) + b_points
+
+    if a_total > b_total:
+        winner = team_a
+        loser = team_b
+        margin = a_total - b_total
+    elif b_total > a_total:
+        winner = team_b
+        loser = team_a
+        margin = b_total - a_total
+    else:
+        winner = 'Draw'
+        loser = 'Draw'
+        margin = 0
+
+    if margin == 0:
+        result_type = 'draw'
+    elif margin <= 3:
+        result_type = 'narrow win'
+    elif margin <= 8:
+        result_type = 'competitive win'
+    elif margin <= 14:
+        result_type = 'strong win'
+    else:
+        result_type = 'dominant win'
+
+    if winner == 'Draw':
+        coached_result = 'drew'
+    elif winner == coached_team:
+        coached_result = 'won'
+    else:
+        coached_result = 'lost'
+
+    return {
+        'teamA': team_a,
+        'teamB': team_b,
+        'coachedTeam': coached_team,
+        'teamAColour': match_context.get('teamAColour', ''),
+        'teamBColour': match_context.get('teamBColour', ''),
+        'competition': match_context.get('competition', ''),
+        'teamAScore': f'{a_goals}-{a_points}',
+        'teamBScore': f'{b_goals}-{b_points}',
+        'teamATotal': a_total,
+        'teamBTotal': b_total,
+        'winner': winner,
+        'loser': loser,
+        'margin': margin,
+        'resultType': result_type,
+        'coachedTeamResult': coached_result,
+        'scoreline': f'{team_a} {a_goals}-{a_points} ({a_total}) vs {team_b} {b_goals}-{b_points} ({b_total})'
+    }
+
+
 def transcribe_audio_from_youtube(url: str, client: OpenAI):
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -141,7 +205,7 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
                 content = [
                     {
                         'type': 'text',
-                        'text': f'You are reviewing sampled frames from a Gaelic football or hurling match. Only describe visible tactical patterns. Focus on spacing, transitions, kickout structure, attacking shape, overloads, defensive compactness and pressure. Do not invent scores, events or player identities. If evidence is weak, explicitly state uncertainty.'
+                        'text': 'Review these sampled Gaelic games frames. Only describe visible tactical evidence: spacing, player density, attacking width, defensive compactness, kickout/restart shape, transition spacing and pressure. Do not infer the score, winner, equaliser, draw, player names or exact events from frames. State uncertainty where evidence is weak.'
                     }
                 ]
 
@@ -158,12 +222,7 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
 
                 response = client.chat.completions.create(
                     model='gpt-4o-mini',
-                    messages=[
-                        {
-                            'role': 'user',
-                            'content': content
-                        }
-                    ]
+                    messages=[{'role': 'user', 'content': content}]
                 )
 
                 observations.append(response.choices[0].message.content or '')
@@ -188,25 +247,45 @@ def analyse_video(request: AnalyseRequest):
     visual_observations = extract_frames_from_youtube(request.url, client)
 
     match_context = request.matchContext or {}
+    match_facts = build_match_facts(match_context)
+    coached_team = match_facts['coachedTeam']
+    opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
 
-    coached_team = match_context.get('coachedTeam', 'The coached team')
-    opposition_team = match_context.get('teamB', 'the opposition')
+    result_guardrail = f"""
+HARD MATCH FACTS - DO NOT CONTRADICT THESE:
+- Scoreline: {match_facts['scoreline']}
+- Winner: {match_facts['winner']}
+- Losing team: {match_facts['loser']}
+- Margin: {match_facts['margin']} points
+- Result type: {match_facts['resultType']}
+- Coached team: {coached_team}
+- Coached team result: {match_facts['coachedTeamResult']}
+
+STRICT RESULT RULES:
+- If margin is greater than 0, NEVER describe the match as a draw.
+- If margin is 9 or more, NEVER describe the game as level, equalised, or close unless the user explicitly provides a timestamped note proving a temporary in-game equaliser.
+- If {coached_team} won, explain why {coached_team} won. Do not say they failed to control the match overall.
+- If {coached_team} lost, explain why {coached_team} lost.
+- Do not say {opposition_team} equalised unless there is explicit transcript or coach-note evidence of an equalising score during the match.
+"""
 
     prompt = f'''
 You are a senior Gaelic football and hurling performance analyst.
 
 Your task is to produce evidence-based tactical analysis.
 
-IMPORTANT RULES:
-- ONLY reference observations supported by transcript, frame observations or match context.
-- NEVER invent exact events, scores, possessions or player identities.
-- If evidence is weak or uncertain, explicitly state uncertainty.
-- Use the actual team names throughout.
-- Analyse primarily from the perspective of {coached_team}.
-- Explain WHY the result happened.
-- Avoid generic coaching clichés.
-- Prefer fewer, sharper insights over long generic paragraphs.
-- Every recommendation must connect to an observed issue.
+{result_guardrail}
+
+IMPORTANT ANALYSIS RULES:
+- Treat HARD MATCH FACTS as deterministic truth, not soft context.
+- Use actual team names throughout.
+- Analyse from the perspective of {coached_team}.
+- Explain WHY the result happened based on the scoreline and available evidence.
+- Separate hard facts from uncertain visual inference.
+- Never invent exact events, possessions, scores, equalisers or player identities.
+- Avoid generic filler such as "rollercoaster", "dynamic movement", "communication gaps", "spatial awareness" unless supported by evidence.
+- Every training recommendation must connect to a specific observed issue or scoreline implication.
+- Prefer concise tactical insight over long prose.
 
 MATCH CONTEXT
 {match_context}
@@ -229,34 +308,40 @@ VISUAL FRAME OBSERVATIONS
 COACH NOTES
 {request.notes}
 
-Return a concise but high-quality coaching report with these exact sections:
+Return a concise premium coaching report with these exact sections:
 
-# Match Flow
-- explain momentum and overall tactical story
-- explain why {coached_team} won or lost
+# Result Snapshot
+- one paragraph using scoreline, winner, margin and result type
+
+# Why {coached_team} {match_facts['coachedTeamResult']}
+- explain the main tactical reasons, grounded in scoreline and available evidence
 
 # Strengths Shown By {coached_team}
-- maximum 5 evidence-based strengths
+- maximum 4 specific strengths
+- each bullet must include: observation, impact, coaching implication
 
-# Weaknesses Shown By {coached_team}
-- maximum 5 evidence-based weaknesses
+# Weaknesses / Risks For {coached_team}
+- maximum 4 specific weaknesses or risks
+- do not overstate weaknesses if the coached team won comfortably
 
-# Tactical Themes
-- explain the clearest patterns observed
-- mention transitions, kickouts, shape or scoring patterns only if evidence exists
+# What Hurt {opposition_team}
+- explain what likely made the match difficult for the opposition
 
-# What Changed The Game
-- explain major tactical swing factors
+# Tactical Themes Worth Reviewing
+- only include themes supported by transcript, frames, notes or scoreline
 
 # Training Priorities
-- maximum 5 very practical coaching actions
-- include drills, structures or session focus ideas
+- maximum 4 practical session priorities
+- include drill type or session structure
 
 # Confidence Notes
-- clearly explain what observations were high confidence vs uncertain
+- High confidence: scoreline-derived conclusions
+- Medium confidence: frame/transcript-supported tactical patterns
+- Low confidence: anything not directly visible or timestamped
 
-Keep the tone elite-level, concise and tactical.
-Do not write generic filler sentences.
+Keep headings clean and professional.
+Do not use markdown bold inside bullet headings.
+Do not repeat the executive summary inside other sections.
 '''
 
     response = client.chat.completions.create(
@@ -264,7 +349,7 @@ Do not write generic filler sentences.
         messages=[
             {
                 'role': 'system',
-                'content': 'You are an elite Gaelic games tactical analyst. You prioritise evidence, specificity and tactical reasoning over generic coaching language.'
+                'content': 'You are an elite Gaelic games tactical analyst. You obey hard scoreline facts, avoid contradictions, and produce evidence-first coaching intelligence.'
             },
             {
                 'role': 'user',
@@ -280,8 +365,9 @@ Do not write generic filler sentences.
         'mode': 'worker',
         'analysis': analysis,
         'videoMetadata': metadata,
+        'matchFacts': match_facts,
         'transcriptLength': len(transcript),
         'visualAnalysisLength': len(visual_observations),
         'framesSampledTarget': 60,
-        'next_stage': 'Future upgrade: event detection, tactical tagging and clip generation.'
+        'next_stage': 'Future upgrade: timestamped event detection, tactical tagging and clip generation.'
     }
