@@ -4,6 +4,8 @@ from openai import OpenAI
 import os
 import yt_dlp
 import tempfile
+import subprocess
+import base64
 
 app = FastAPI(title='Gaelic Coach AI Worker')
 
@@ -90,6 +92,81 @@ def transcribe_audio_from_youtube(url: str, client: OpenAI):
         return ''
 
 
+def extract_frames_from_youtube(url: str, client: OpenAI):
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = os.path.join(tmpdir, 'match.mp4')
+            frame_pattern = os.path.join(tmpdir, 'frame_%03d.jpg')
+
+            ydl_opts = {
+                'format': 'bestvideo[height<=480]+bestaudio/best[height<=480]/best',
+                'outtmpl': video_path,
+                'quiet': True,
+                'noplaylist': True,
+                'merge_output_format': 'mp4'
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            if not os.path.exists(video_path):
+                return ''
+
+            subprocess.run(
+                [
+                    'ffmpeg', '-y', '-i', video_path,
+                    '-vf', 'fps=1/180,scale=640:-1',
+                    '-frames:v', '8',
+                    frame_pattern
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
+
+            frame_paths = sorted([
+                os.path.join(tmpdir, filename)
+                for filename in os.listdir(tmpdir)
+                if filename.startswith('frame_') and filename.endswith('.jpg')
+            ])[:8]
+
+            if not frame_paths:
+                return ''
+
+            content = [
+                {
+                    'type': 'text',
+                    'text': 'You are reviewing sampled frames from a Gaelic football or hurling match. Identify visible tactical patterns only: pitch shape, player spacing, defensive structure, attacking width, restarts, pressure, and obvious coaching observations. Do not invent exact events, scores, or player identities.'
+                }
+            ]
+
+            for frame_path in frame_paths:
+                with open(frame_path, 'rb') as image_file:
+                    encoded = base64.b64encode(image_file.read()).decode('utf-8')
+                    content.append({
+                        'type': 'image_url',
+                        'image_url': {
+                            'url': f'data:image/jpeg;base64,{encoded}',
+                            'detail': 'low'
+                        }
+                    })
+
+            response = client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[
+                    {
+                        'role': 'user',
+                        'content': content
+                    }
+                ]
+            )
+
+            return response.choices[0].message.content or ''
+
+    except Exception:
+        return ''
+
+
 @app.post('/analyse-video')
 def analyse_video(request: AnalyseRequest):
     api_key = os.getenv('OPENAI_API_KEY')
@@ -101,11 +178,12 @@ def analyse_video(request: AnalyseRequest):
 
     metadata = extract_video_metadata(request.url)
     transcript = transcribe_audio_from_youtube(request.url, client)
+    visual_observations = extract_frames_from_youtube(request.url, client)
 
     prompt = f'''
 You are an elite Gaelic football and hurling performance analyst.
 
-Analyse this match context and create a coaching report.
+Create a professional coaching report from the available video-derived data.
 
 VIDEO INFORMATION
 Title: {metadata['title']}
@@ -119,21 +197,25 @@ MATCH URL
 TRANSCRIPT / COMMENTARY
 {transcript[:12000]}
 
+VISUAL FRAME OBSERVATIONS
+{visual_observations[:6000]}
+
 COACH NOTES
 {request.notes}
 
 IMPORTANT:
-- Use transcript and metadata to infer tactical themes.
-- Do NOT claim to visually track players unless explicitly described.
-- Focus on practical coaching insights.
-- Be structured and professional.
+- Use transcript, metadata, coach notes and sampled frame observations.
+- Be clear about themes rather than pretending perfect player tracking.
+- Focus on practical coaching value.
+- Include specific sections and actionable training recommendations.
 
 Return:
 - executive summary
 - attacking analysis
 - defensive analysis
 - transition analysis
-- kickout observations
+- kickout/restart observations
+- visible tactical themes
 - training priorities
 - coach recommendations
 '''
@@ -160,5 +242,6 @@ Return:
         'analysis': analysis,
         'videoMetadata': metadata,
         'transcriptLength': len(transcript),
-        'next_stage': 'Next upgrade: frame extraction and AI vision analysis.'
+        'visualAnalysisLength': len(visual_observations),
+        'next_stage': 'Future upgrade: event detection, clip creation, player tracking and persistent report storage.'
     }
