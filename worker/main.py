@@ -3,9 +3,6 @@ from pydantic import BaseModel
 from openai import OpenAI
 import os
 import yt_dlp
-import tempfile
-import subprocess
-import base64
 
 app = FastAPI(title='Gaelic Coach AI Worker')
 
@@ -30,29 +27,8 @@ def is_veo_url(url: str):
 
 def processing_profile(url: str):
     if is_veo_url(url):
-        return {
-            'name': 'quick-veo',
-            'video_format': 'best[height<=360]/best',
-            'audio_format': 'worstaudio/bestaudio',
-            'frame_interval': 180,
-            'max_frames': 20,
-            'scale': 512,
-            'transcribe': False
-        }
-    return {
-        'name': 'standard',
-        'video_format': 'best[height<=480]/best',
-        'audio_format': 'bestaudio/best',
-        'frame_interval': 60,
-        'max_frames': 60,
-        'scale': 640,
-        'transcribe': True
-    }
-
-
-def format_timestamp(seconds: float):
-    seconds = max(0, int(seconds or 0))
-    return f'{seconds // 60:02d}:{seconds % 60:02d}'
+        return {'name': 'quick-veo', 'frames': 20, 'transcribe': False}
+    return {'name': 'standard', 'frames': 60, 'transcribe': True}
 
 
 def extract_video_metadata(url: str):
@@ -89,7 +65,6 @@ def build_match_facts(match_context: dict):
         winner, loser, margin = 'Draw', 'Draw', 0
 
     coached_result = 'drew' if winner == 'Draw' else ('won' if winner == coached_team else 'lost')
-
     return {
         'teamA': team_a,
         'teamB': team_b,
@@ -98,21 +73,13 @@ def build_match_facts(match_context: dict):
         'loser': loser,
         'margin': margin,
         'coachedTeamResult': coached_result,
+        'teamAGoals': a_goals,
+        'teamBGoals': b_goals,
         'teamATotal': a_total,
         'teamBTotal': b_total,
         'goalDifference': a_goals - b_goals,
         'scoreline': f'{team_a} {a_goals}-{a_points} ({a_total}) vs {team_b} {b_goals}-{b_points} ({b_total})'
     }
-
-
-def transcribe_audio(url: str, client: OpenAI, profile: dict):
-    if not profile['transcribe']:
-        return {'text': '', 'segments': 'Transcript skipped in quick Veo mode.'}
-    return {'text': '', 'segments': ''}
-
-
-def extract_frames(url: str, client: OpenAI, profile: dict):
-    return {'observations': '', 'moments': ''}
 
 
 @app.post('/analyse-video')
@@ -124,7 +91,6 @@ def analyse_video(request: AnalyseRequest):
     client = OpenAI(api_key=api_key)
     profile = processing_profile(request.url)
     metadata = extract_video_metadata(request.url)
-
     match_context = request.matchContext or {}
     match_facts = build_match_facts(match_context)
     coached_team = match_facts['coachedTeam']
@@ -133,113 +99,101 @@ def analyse_video(request: AnalyseRequest):
     prompt = f'''
 You are an elite Gaelic football tactical analyst.
 
-This is NOT a generic AI summary task.
-You must reason like a senior intercounty analyst.
+Create a clean coaching dashboard, not a long essay.
+The output must be concise, comparative, visual and coach-friendly.
 
 MATCH FACTS:
 {match_facts}
 
-CRITICAL REASONING RULES:
-- Goals are disproportionately valuable in Gaelic football.
-- If a team loses despite scoring many points, explain why high-value goal concessions mattered.
-- Distinguish between scoring volume and scoring quality.
-- Infer likely tactical causes from the score profile.
-- Avoid generic phrases like “spatial awareness”, “communication”, “momentum”, “dynamic play” unless supported by evidence.
-- Use actual team names repeatedly.
-- Every weakness must explain tactical consequence.
-- Every training recommendation must connect directly to a weakness.
-- Timestamp observations must feel like coach review clips.
-- If evidence is weak, explicitly state “approximate / medium confidence”.
-- Never mention draws or equalisers unless explicitly evidenced.
+VIDEO METADATA:
+{metadata}
+
+COACH NOTES:
+{request.notes}
+
+PROCESSING PROFILE:
+{profile}
+
+NON-NEGOTIABLE RULES:
 - Do not contradict the final score.
+- Do not invent draws, equalisers, scorers or exact events.
+- Use actual team names throughout.
+- Avoid generic filler such as spatial awareness, dynamic movement, communication gaps or momentum unless clearly supported.
+- Reason from Gaelic football scoring logic.
+- Goals are high-value events; points-heavy teams can lose if they concede goals.
+- Keep analysis short, sharp and useful for coaches.
+- Prefer dashboard tables over paragraphs.
+- If evidence is limited, say so in confidence notes.
 
-GAME-STATE REASONING:
-- A narrow one-point defeat with a negative goal difference usually suggests:
-  * failure to defend high-value chances
-  * inability to generate goals
-  * defensive transition exposure
-  * poor protection of central scoring zones
-- Explain WHICH is most likely.
+Return this exact markdown structure:
 
-OUTPUT STYLE:
-- concise
-- tactical
-- specific
-- premium
-- coaching language
-- no waffle
-- no repetition
-
-Return these exact sections:
-
-# Result Snapshot
-2-3 sentences maximum.
+# Match Dashboard
+2 concise sentences explaining the result and the core tactical story.
 
 # Key Coach Takeaway
-One elite-level coaching insight.
+One memorable coaching conclusion, maximum 35 words.
 
-# Why {coached_team} {match_facts['coachedTeamResult']}
-Specific tactical reasoning.
+# Tactical Comparison
+| Area | {coached_team} | {opposition_team} |
+|---|---|---|
+| Scoring Profile |  |  |
+| Goal Threat |  |  |
+| Attacking Style |  |  |
+| Transition Play |  |  |
+| Defensive Shape |  |  |
+| Kickout / Restart Battle |  |  |
+| Match Control |  |  |
 
-# Key Timestamped Moments
-Use format:
-06:00 (approx)
-Observation:
-Impact:
-Coach Review:
-Confidence:
+Use ✅, ⚠️ and ❌ where helpful.
 
-# Strengths Shown By {coached_team}
-Maximum 4.
-Must explain WHY the strength mattered.
+# Key Moments To Review
+| Time | Moment | Coach Review |
+|---|---|---|
+| 06:00 approx |  |  |
+| 12:00 approx |  |  |
+| 30:00 approx |  |  |
+| 54:00 approx |  |  |
 
-# Weaknesses / Risks For {coached_team}
-Maximum 4.
-Each weakness must include:
-- tactical issue
-- consequence
-- likely match impact
+If exact evidence is weak, label the moment as approximate / medium confidence.
 
-# What Worked For {opposition_team}
-Explain what likely allowed them to win.
+# Strengths To Keep
+| Strength | Why It Mattered |
+|---|---|
+|  |  |
+|  |  |
+|  |  |
 
-# Tactical Identity Observed
-Identify likely style:
-- transition-based
-- direct kicking
-- defensive retreat
-- width-based
-- possession-heavy
-- aggressive press
-etc.
+# Issues To Fix
+| Issue | Match Impact | Coaching Fix |
+|---|---|---|
+|  |  |  |
+|  |  |  |
+|  |  |  |
 
 # Training Priorities
-Must be actionable.
-Include drill or session idea.
+| Priority | Drill / Session Focus | Outcome |
+|---|---|---|
+|  |  |  |
+|  |  |  |
+|  |  |  |
 
 # Confidence Notes
-Separate:
-- High confidence
-- Medium confidence
-- Low confidence
+| Confidence | What We Can Trust |
+|---|---|
+| High | Scoreline, winner, margin and goal difference. |
+| Medium | Tactical inferences from score profile, coach context and sampled footage. |
+| Low | Player-specific actions or exact events not visible/timestamped. |
 '''
 
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {
-                'role': 'system',
-                'content': 'You are an elite Gaelic games tactical analyst producing professional coaching intelligence.'
-            },
-            {
-                'role': 'user',
-                'content': prompt
-            }
+            {'role': 'system', 'content': 'You produce concise Gaelic games coaching dashboards, comparison tables and actionable training recommendations.'},
+            {'role': 'user', 'content': prompt}
         ]
     )
 
     analysis = response.choices[0].message.content
-
     return {
         'status': 'complete',
         'mode': 'worker',
