@@ -115,8 +115,8 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
             subprocess.run(
                 [
                     'ffmpeg', '-y', '-i', video_path,
-                    '-vf', 'fps=1/180,scale=640:-1',
-                    '-frames:v', '8',
+                    '-vf', 'fps=1/60,scale=640:-1',
+                    '-frames:v', '60',
                     frame_pattern
                 ],
                 stdout=subprocess.DEVNULL,
@@ -128,40 +128,46 @@ def extract_frames_from_youtube(url: str, client: OpenAI):
                 os.path.join(tmpdir, filename)
                 for filename in os.listdir(tmpdir)
                 if filename.startswith('frame_') and filename.endswith('.jpg')
-            ])[:8]
+            ])[:60]
 
             if not frame_paths:
                 return ''
 
-            content = [
-                {
-                    'type': 'text',
-                    'text': 'You are reviewing sampled frames from a Gaelic football or hurling match. Identify visible tactical patterns only: pitch shape, player spacing, defensive structure, attacking width, restarts, pressure, and obvious coaching observations. Do not invent exact events, scores, or player identities.'
-                }
-            ]
+            frame_batches = [frame_paths[i:i + 10] for i in range(0, len(frame_paths), 10)]
+            observations = []
 
-            for frame_path in frame_paths:
-                with open(frame_path, 'rb') as image_file:
-                    encoded = base64.b64encode(image_file.read()).decode('utf-8')
-                    content.append({
-                        'type': 'image_url',
-                        'image_url': {
-                            'url': f'data:image/jpeg;base64,{encoded}',
-                            'detail': 'low'
-                        }
-                    })
-
-            response = client.chat.completions.create(
-                model='gpt-4o-mini',
-                messages=[
+            for batch_number, frame_batch in enumerate(frame_batches, start=1):
+                content = [
                     {
-                        'role': 'user',
-                        'content': content
+                        'type': 'text',
+                        'text': f'You are reviewing batch {batch_number} of sampled frames from a Gaelic football or hurling match. Identify visible tactical patterns only: pitch shape, player spacing, defensive structure, attacking width, restarts, pressure, transition spacing, and obvious coaching observations. Do not invent exact events, scores, or player identities.'
                     }
                 ]
-            )
 
-            return response.choices[0].message.content or ''
+                for frame_path in frame_batch:
+                    with open(frame_path, 'rb') as image_file:
+                        encoded = base64.b64encode(image_file.read()).decode('utf-8')
+                        content.append({
+                            'type': 'image_url',
+                            'image_url': {
+                                'url': f'data:image/jpeg;base64,{encoded}',
+                                'detail': 'low'
+                            }
+                        })
+
+                response = client.chat.completions.create(
+                    model='gpt-4o-mini',
+                    messages=[
+                        {
+                            'role': 'user',
+                            'content': content
+                        }
+                    ]
+                )
+
+                observations.append(response.choices[0].message.content or '')
+
+            return '\n\n'.join(observations)
 
     except Exception:
         return ''
@@ -197,8 +203,8 @@ MATCH URL
 TRANSCRIPT / COMMENTARY
 {transcript[:12000]}
 
-VISUAL FRAME OBSERVATIONS
-{visual_observations[:6000]}
+VISUAL FRAME OBSERVATIONS FROM UP TO 60 SAMPLED FRAMES
+{visual_observations[:14000]}
 
 COACH NOTES
 {request.notes}
@@ -243,5 +249,6 @@ Return:
         'videoMetadata': metadata,
         'transcriptLength': len(transcript),
         'visualAnalysisLength': len(visual_observations),
+        'framesSampledTarget': 60,
         'next_stage': 'Future upgrade: event detection, clip creation, player tracking and persistent report storage.'
     }
