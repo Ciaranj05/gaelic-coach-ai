@@ -142,7 +142,7 @@ You are an elite Gaelic football performance analyst working directly for {coach
 This report is FOR the coaching group of {coached_team}.
 The entire analysis should be biased toward helping {coached_team} improve.
 
-Create a short manager debrief. Do not write an essay.
+Create a short Gaelic football manager debrief. Do not write an essay.
 The report must compare the two teams, include an estimated key stats table, identify the match-deciding factor, and give three sharp coaching priorities specifically designed to help {coached_team} improve.
 
 MATCH FACTS:
@@ -160,6 +160,14 @@ COACH NOTES:
 PROCESSING PROFILE:
 {profile}
 
+GAELIC FOOTBALL LANGUAGE RULES:
+- This is Gaelic football, not soccer, rugby, NFL, or generic sport.
+- Use authentic Gaelic football coaching language: kickouts, breaking ball, middle third, runners from deep, direct ball inside, support runners, scoring zone, D protection, sweeper cover, tracking runners, overlap support, counter-press after turnover, retaining primary possession, second ball, kick-pass threat, running game, shot selection, game management, purple patches, scoring bursts, rest defence, defensive screen, half-back line, half-forward line, opposition kickout press.
+- Prefer observation-first labels over vague ratings. Example: “Created scores from middle-third turnovers ✅” instead of “Strong ✅”.
+- Avoid generic football/sports labels like “proactive control”, “lacks initiative”, “effective”, “poor performance”, “disjointed”, “passive and reactive”, “offensive structure”, “defensive cohesion”.
+- Do not use soccer-style phrases like “final third”, “pressing defence”, “formation”, “attacking penetration” unless adapted to Gaelic football context.
+- Manager takeaway should sound like a Gaelic football manager after video review, not a corporate summary.
+
 STRICT RULES:
 - Do not contradict the scoreline, winner or margin.
 - Do not invent exact scorers, exact timestamps or events.
@@ -167,13 +175,12 @@ STRICT RULES:
 - Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
 - Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
 - Estimated stats must be labelled as estimated and should be plausible from the scoreline/context, not fake precision.
-- Use ranges or labels where exact numbers are not reliable, for example “High”, “Low”, “50–55% estimated”, “Strong”, “Limited”.
+- Use ranges or labels where exact numbers are not reliable, for example “50–55% estimated”, “high scoring volume”, “limited goal threat”, “cleaner kickout platform”.
 - Focus primarily on {coached_team}: their strengths, weaknesses, tactical issues and coaching opportunities.
 - The opposition analysis should only exist to explain what hurt or exposed {coached_team}.
 - Main Focus Areas must be practical, tactical and directly useful for {coached_team} training sessions.
 - Do not recommend improving something that was obviously a major strength from the scoreline.
 - The Key Manager Takeaway must sound like the manager of {coached_team} speaking internally to players.
-- No generic filler such as “communication”, “spatial awareness”, “dynamic movement”, “cohesion”, “target awareness”, “sharpen transitions”, or “maintain structure”.
 - No confidence notes.
 - No long paragraphs.
 - Reason from Gaelic football scoring logic: goals are high-value; points show scoring volume; goal difference often explains the result.
@@ -185,54 +192,54 @@ Return this exact markdown structure and nothing else:
 |---|---|
 | Scoreline | {match_facts['scoreline']} |
 | Result | {coached_team} {match_facts['coachedTeamResult']} by {match_facts['margin']} point(s) |
-| Core Story | One direct tactical sentence explaining why the game went this way from the perspective of {coached_team}. |
+| Core Story | One direct Gaelic football tactical sentence explaining why the game went this way from the perspective of {coached_team}. |
 
 # {coached_team} – Match-Deciding Factor
-One blunt paragraph, maximum 45 words. Explain the one factor that most shaped the result for {coached_team}.
+One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor that most shaped the result for {coached_team}.
 
 # {coached_team} – Estimated Key Match Stats
 | Metric | {coached_team} | {opposition_team} |
 |---|---|---|
-| Possession | estimated range/label + ✅/⚠️/❌ | estimated range/label + ✅/⚠️/❌ |
-| Shot Creation | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
-| Goal Threat | {match_facts['coachedGoals']} goals + tactical label + ✅/⚠️/❌ | {match_facts['oppositionGoals']} goals + tactical label + ✅/⚠️/❌ |
-| Point Output | {match_facts['coachedPoints']} points + tactical label + ✅/⚠️/❌ | {match_facts['oppositionPoints']} points + tactical label + ✅/⚠️/❌ |
-| Transition Scores | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
-| Turnovers Conceded | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
-| Scores From Turnovers | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
-| Kickout / Restart Retention | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
-| Breaking Ball | estimated label + ✅/⚠️/❌ | estimated label + ✅/⚠️/❌ |
-| Defensive Scores Conceded | based on opponent total + tactical label + ✅/⚠️/❌ | based on opponent total + tactical label + ✅/⚠️/❌ |
+| Possession | estimated range/label + Gaelic football observation + ✅/⚠️/❌ | estimated range/label + Gaelic football observation + ✅/⚠️/❌ |
+| Shot Creation | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Goal Threat | {match_facts['coachedGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ | {match_facts['oppositionGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ |
+| Point Output | {match_facts['coachedPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ | {match_facts['oppositionPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ |
+| Transition Scores | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Turnovers Conceded | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Scores From Turnovers | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Kickout / Restart Retention | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Breaking Ball | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
+| Defensive Scores Conceded | based on opponent total + Gaelic football defensive label + ✅/⚠️/❌ | based on opponent total + Gaelic football defensive label + ✅/⚠️/❌ |
 
 # {coached_team} – Tactical Comparison
 | Area | {coached_team} | {opposition_team} |
 |---|---|---|
-| Possession | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Transition Speed | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Attacking Style | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Kick Passing | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Shot Creation | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Goal Threat | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Turnovers | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Kick-Out Battle | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Breaking Ball | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
-| Defensive Shape | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
+| Possession | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Transition Through Middle Third | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Direct Ball Inside | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Kick-Pass Threat | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Shot Selection | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Goal Threat | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Turnovers / Counter-Press | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Kickout Platform | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| Breaking Ball | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
+| D Protection / Defensive Screen | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 
 # {coached_team} – Main Focus Areas Going Forward
 | Priority | Why It Matters For {coached_team} | Coaching Action |
 |---|---|---|
-| Specific focus area 1 | Match-specific reason linked to the game | Practical training action for {coached_team} |
-| Specific focus area 2 | Match-specific reason linked to the game | Practical training action for {coached_team} |
-| Specific focus area 3 | Match-specific reason linked to the game | Practical training action for {coached_team} |
+| Specific Gaelic football focus area 1 | Match-specific reason linked to Gaelic football patterns | Practical training action for {coached_team} |
+| Specific Gaelic football focus area 2 | Match-specific reason linked to Gaelic football patterns | Practical training action for {coached_team} |
+| Specific Gaelic football focus area 3 | Match-specific reason linked to Gaelic football patterns | Practical training action for {coached_team} |
 
 # {coached_team} – Key Manager Takeaway
-One short quote, maximum 55 words. Make it direct, honest and tactical. It should sound like the manager of {coached_team} speaking to players after video review.
+One short quote, maximum 55 words. Make it direct, honest and Gaelic football-specific. It should sound like the manager of {coached_team} speaking to players after video review.
 '''
 
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports focused on helping the coached team improve through scoreline-aware tactical insights, estimated key stats and actionable coaching priorities.'},
+            {'role': 'system', 'content': 'You produce concise Gaelic football manager debrief reports using authentic GAA coaching language, scoreline-aware tactical insights, estimated key stats and actionable training priorities.'},
             {'role': 'user', 'content': prompt}
         ]
     )
