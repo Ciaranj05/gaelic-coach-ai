@@ -5,17 +5,47 @@ import { useState } from 'react'
 type Status = 'idle' | 'processing' | 'complete' | 'error'
 
 type Report = {
-  mode: 'ai' | 'demo'
+  mode: 'ai' | 'demo' | 'worker'
   summary: string
   scoreline: string
   keyInsights: string[]
   trainingFocus: string[]
   timeline: { minute: string; note: string }[]
   nextSteps: string[]
+  rawAnalysis?: string
 }
 
 function isVideoUrl(value: string) {
   return value.includes('youtube.com') || value.includes('youtu.be') || value.includes('vimeo.com') || value.includes('veo.co')
+}
+
+function downloadReport(report: Report) {
+  const fullReport = report.rawAnalysis || [
+    `Match Analysis`,
+    ``,
+    `Summary: ${report.summary}`,
+    ``,
+    `Scoreline: ${report.scoreline}`,
+    ``,
+    `Key Insights:`,
+    ...report.keyInsights.map((item) => `- ${item}`),
+    ``,
+    `Training Focus:`,
+    ...report.trainingFocus.map((item) => `- ${item}`),
+    ``,
+    `Next Steps:`,
+    ...report.nextSteps.map((item) => `- ${item}`)
+  ].join('\n')
+
+  const blob = new Blob([fullReport], { type: 'text/plain;charset=utf-8' })
+  const href = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = href
+  link.download = 'gaelic-coach-ai-match-report.txt'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(href)
 }
 
 export default function YouTubeAnalyser() {
@@ -105,21 +135,33 @@ export default function YouTubeAnalyser() {
       ) : null}
 
       {status === 'complete' && report ? (
-        <div className="mt-6 space-y-5 rounded-3xl border border-white/10 bg-black/40 p-5">
-          <div className="flex items-center justify-between gap-4">
-            <h3 className="text-2xl font-bold">Match Analysis</h3>
-            <span className="rounded-full bg-green-400/10 px-3 py-1 text-xs font-semibold uppercase text-green-300">
-              {report.mode === 'ai' ? 'AI generated' : 'Demo mode'}
-            </span>
+        <div className="mt-6 space-y-6 rounded-3xl border border-white/10 bg-black/40 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h3 className="text-2xl font-bold">Match Analysis</h3>
+              <p className="mt-1 text-xs uppercase tracking-wide text-green-300">
+                {report.mode === 'worker' ? 'Railway AI worker' : report.mode === 'ai' ? 'AI generated' : 'Demo mode'}
+              </p>
+            </div>
+
+            <button
+              onClick={() => downloadReport(report)}
+              className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200"
+            >
+              Download Report
+            </button>
           </div>
 
-          <p className="text-sm leading-6 text-zinc-300">{report.summary}</p>
+          <div className="rounded-2xl bg-white/5 p-4">
+            <h4 className="font-semibold text-white">Executive Summary</h4>
+            <p className="mt-3 text-sm leading-7 text-zinc-300">{report.summary}</p>
+          </div>
 
           <div>
             <h4 className="font-semibold text-white">Key Insights</h4>
             <ul className="mt-3 space-y-2 text-sm text-zinc-300">
               {report.keyInsights.map((item) => (
-                <li key={item} className="rounded-2xl bg-white/5 p-3">{item}</li>
+                <li key={item} className="rounded-2xl bg-white/5 p-3 leading-6">{item}</li>
               ))}
             </ul>
           </div>
@@ -128,10 +170,19 @@ export default function YouTubeAnalyser() {
             <h4 className="font-semibold text-white">Training Focus</h4>
             <ul className="mt-3 space-y-2 text-sm text-green-300">
               {report.trainingFocus.map((item) => (
-                <li key={item} className="rounded-2xl bg-green-400/10 p-3">{item}</li>
+                <li key={item} className="rounded-2xl bg-green-400/10 p-3 leading-6">{item}</li>
               ))}
             </ul>
           </div>
+
+          {report.rawAnalysis ? (
+            <div className="rounded-2xl border border-white/10 bg-black/60 p-5">
+              <h4 className="font-semibold text-white">Full Coaching Report</h4>
+              <pre className="mt-4 max-h-[520px] whitespace-pre-wrap overflow-auto text-sm leading-7 text-zinc-300">
+                {report.rawAnalysis}
+              </pre>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
