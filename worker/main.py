@@ -99,10 +99,13 @@ def analyse_video(request: AnalyseRequest):
     opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
 
     prompt = f'''
-You are an elite Gaelic football performance analyst.
+You are an elite Gaelic football performance analyst working directly for {coached_team}.
+
+This report is FOR the coaching group of {coached_team}.
+The entire analysis should be biased toward helping {coached_team} improve.
 
 Create a short manager debrief. Do not write an essay.
-The report must compare the two teams, identify the match-deciding factor, and give three sharp coaching priorities.
+The report must compare the two teams, identify the match-deciding factor, and give three sharp coaching priorities specifically designed to help {coached_team} improve.
 
 MATCH FACTS:
 {match_facts}
@@ -122,8 +125,11 @@ STRICT RULES:
 - Use actual team names throughout.
 - Use ✅ for clear strengths, ❌ for clear weaknesses and ⚠️ for mixed areas.
 - Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
+- Focus primarily on {coached_team}: their strengths, weaknesses, tactical issues and coaching opportunities.
+- The opposition analysis should only exist to explain what hurt or exposed {coached_team}.
+- Main Focus Areas must be practical, tactical and directly useful for {coached_team} training sessions.
+- The Key Manager Takeaway must sound like the manager of {coached_team} speaking internally to players.
 - No generic filler such as “communication”, “spatial awareness”, “dynamic movement”, “cohesion”, “target awareness”, “sharpen transitions”, or “maintain structure”.
-- Focus areas must be practical, specific and match-derived.
 - No confidence notes.
 - No long paragraphs.
 - Reason from Gaelic football scoring logic: goals are high-value; points show scoring volume; goal difference often explains the result.
@@ -135,10 +141,10 @@ Return this exact markdown structure and nothing else:
 |---|---|
 | Scoreline | {match_facts['scoreline']} |
 | Result | {coached_team} {match_facts['coachedTeamResult']} by {match_facts['margin']} point(s) |
-| Core Story | One direct tactical sentence explaining why the game went this way. |
+| Core Story | One direct tactical sentence explaining why the game went this way from the perspective of {coached_team}. |
 
 # Match-Deciding Factor
-One blunt paragraph, maximum 45 words. Explain the one factor that most shaped the result.
+One blunt paragraph, maximum 45 words. Explain the one factor that most shaped the result for {coached_team}.
 
 # Tactical Comparison
 | Area | {coached_team} | {opposition_team} |
@@ -155,20 +161,20 @@ One blunt paragraph, maximum 45 words. Explain the one factor that most shaped t
 | Defensive Shape | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
 
 # Main Focus Areas Going Forward
-| Priority | Why It Matters | Coaching Action |
+| Priority | Why It Matters For {coached_team} | Coaching Action |
 |---|---|---|
-| Specific focus area 1 | Match-specific reason | Practical training action |
-| Specific focus area 2 | Match-specific reason | Practical training action |
-| Specific focus area 3 | Match-specific reason | Practical training action |
+| Specific focus area 1 | Match-specific reason linked to the game | Practical training action for {coached_team} |
+| Specific focus area 2 | Match-specific reason linked to the game | Practical training action for {coached_team} |
+| Specific focus area 3 | Match-specific reason linked to the game | Practical training action for {coached_team} |
 
 # Key Manager Takeaway
-One short quote, maximum 55 words. Make it direct, honest and tactical. It should sound like a real manager speaking to players after video review.
+One short quote, maximum 55 words. Make it direct, honest and tactical. It should sound like the manager of {coached_team} speaking to players after video review.
 '''
 
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports with comparison tables, match-deciding factors and direct coaching priorities.'},
+            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports focused on helping the coached team improve through tactical insights and actionable coaching priorities.'},
             {'role': 'user', 'content': prompt}
         ]
     )
