@@ -8,13 +8,14 @@ type AnalyseRequest = {
 type CoachingReport = {
   sourceUrl: string
   status: string
-  mode: 'ai' | 'demo'
+  mode: 'ai' | 'demo' | 'worker'
   summary: string
   scoreline: string
   keyInsights: string[]
   trainingFocus: string[]
   timeline: { minute: string; note: string }[]
   nextSteps: string[]
+  rawAnalysis?: string
 }
 
 function isSupportedUrl(url: string) {
@@ -26,7 +27,7 @@ function buildDemoReport(url: string): CoachingReport {
     sourceUrl: url,
     status: 'complete',
     mode: 'demo',
-    summary: 'Demo report generated. Add an OpenAI API key and match notes/transcript to generate tailored coaching analysis.',
+    summary: 'Demo report generated. The Railway worker was not reached, or no analysis input was available.',
     scoreline: 'Unavailable until match data is provided',
     keyInsights: [
       'Kickout retention and second-ball response should be reviewed.',
@@ -40,22 +41,70 @@ function buildDemoReport(url: string): CoachingReport {
       'Support play after turnovers won',
       'Decision-making in the scoring zone'
     ],
-    timeline: [
-      { minute: '0-15', note: 'Opening phase: establish defensive structure and kickout options.' },
-      { minute: '16-30', note: 'Middle phase: review turnovers and support running.' },
-      { minute: '31-45', note: 'Momentum phase: assess scoring chances and shot selection.' },
-      { minute: '46-60+', note: 'Closing phase: review energy, shape, and game management.' }
-    ],
+    timeline: [],
     nextSteps: [
-      'Add OPENAI_API_KEY in Vercel environment variables.',
-      'Provide match notes, transcript, or tagged moments for tailored analysis.',
-      'Connect background video processing for frame/audio extraction.',
-      'Store reports against coach and team accounts.'
+      'Check WORKER_API_URL is set in Vercel.',
+      'Check the Railway worker is online.',
+      'Redeploy Vercel after setting environment variables.'
     ]
   }
 }
 
+function splitAnalysisIntoBullets(text: string) {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/^[-*#\d.\s]+/, '').trim())
+    .filter((line) => line.length > 20)
+    .slice(0, 6)
+}
+
+async function callRailwayWorker(url: string, notes: string): Promise<CoachingReport | null> {
+  const workerUrl = process.env.WORKER_API_URL?.replace(/\/$/, '')
+
+  if (!workerUrl) {
+    return null
+  }
+
+  const response = await fetch(`${workerUrl}/analyse-video`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, notes }),
+    cache: 'no-store'
+  })
+
+  if (!response.ok) {
+    return null
+  }
+
+  const data = await response.json()
+  const analysis = String(data.analysis ?? '')
+  const bullets = splitAnalysisIntoBullets(analysis)
+
+  return {
+    sourceUrl: url,
+    status: 'complete',
+    mode: 'worker',
+    summary: bullets[0] ?? 'Railway worker generated a coaching report.',
+    scoreline: 'Provided in coach notes if available',
+    keyInsights: bullets.slice(0, 4),
+    trainingFocus: bullets.slice(4, 8).length ? bullets.slice(4, 8) : [
+      'Review kickout strategy and retention under pressure.',
+      'Work on transition defence after turnovers.',
+      'Improve decision-making and shot selection in scoring zones.'
+    ],
+    timeline: [],
+    nextSteps: ['Next step: connect real YouTube download, transcript extraction and frame analysis.'],
+    rawAnalysis: analysis
+  }
+}
+
 async function generateAiReport(url: string, notes: string): Promise<CoachingReport> {
+  const workerReport = await callRailwayWorker(url, notes)
+
+  if (workerReport) {
+    return workerReport
+  }
+
   const apiKey = process.env.OPENAI_API_KEY
 
   if (!apiKey || !notes.trim()) {
