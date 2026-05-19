@@ -28,7 +28,7 @@ PROGRESS_STAGES = {
     'download': {'percent': 22, 'label': 'Downloading match video'},
     'full_match_scan': {'percent': 38, 'label': 'Scanning full match frames'},
     'event_selection': {'percent': 55, 'label': 'Selecting key review moments'},
-    'event_analysis': {'percent': 72, 'label': 'Classifying tactical and scoring events'},
+    'event_analysis': {'percent': 72, 'label': 'Classifying tactical and score outcomes'},
     'clip_extraction': {'percent': 82, 'label': 'Creating review clips'},
     'report': {'percent': 92, 'label': 'Building Gaelic football report'},
     'complete': {'percent': 100, 'label': 'Report ready'},
@@ -36,17 +36,12 @@ PROGRESS_STAGES = {
 }
 
 EVENT_TYPES = [
-    'kickout_restart',
-    'turnover',
-    'fast_transition',
-    'scoring_chance',
-    'score_or_restart_after_score',
-    'defensive_setup',
-    'breaking_ball',
-    'slow_possession',
-    'game_management',
-    'not_useful'
+    'kickout_restart', 'turnover', 'fast_transition', 'scoring_chance',
+    'score_or_restart_after_score', 'defensive_setup', 'breaking_ball',
+    'slow_possession', 'game_management', 'not_useful'
 ]
+
+SCORE_OUTCOMES = ['point', 'goal', 'wide', 'save', 'blocked', 'unknown']
 
 @app.get('/')
 def health():
@@ -73,13 +68,33 @@ def is_veo_url(url: str):
 
 def processing_profile(url: str):
     if is_veo_url(url):
-        return {'name': 'quick-veo', 'frames': 20, 'transcribe': False, 'scanIntervalSeconds': 2, 'eventFramePack': 6, 'videoFormat': 'best[height<=360]/best', 'clipCount': 4}
-    return {'name': 'standard', 'frames': 60, 'transcribe': True, 'scanIntervalSeconds': 1, 'eventFramePack': 8, 'videoFormat': 'best[height<=480]/best', 'clipCount': 6}
+        return {'name': 'quick-veo', 'scanIntervalSeconds': 2, 'eventFramePack': 6, 'videoFormat': 'best[height<=360]/best', 'clipCount': 4}
+    return {'name': 'standard', 'scanIntervalSeconds': 1, 'eventFramePack': 8, 'videoFormat': 'best[height<=480]/best', 'clipCount': 6}
 
 
 def format_timestamp(seconds: int):
     seconds = max(0, int(seconds or 0))
     return f'{seconds // 60:02d}:{seconds % 60:02d}'
+
+
+def parse_json_safely(text: str):
+    try:
+        return json.loads(text)
+    except Exception:
+        try:
+            return json.loads(text[text.index('{'):text.rindex('}') + 1])
+        except Exception:
+            return None
+
+
+def image_content_from_paths(paths):
+    content = []
+    for item in paths:
+        path = item['path'] if isinstance(item, dict) else item
+        with open(path, 'rb') as image_file:
+            encoded = base64.b64encode(image_file.read()).decode('utf-8')
+        content.append({'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}', 'detail': 'low'}})
+    return content
 
 
 def extract_video_metadata(url: str):
@@ -97,106 +112,124 @@ def extract_video_metadata(url: str):
         return {'title': '', 'description': '', 'uploader': '', 'duration': 0, 'filesize': 0}
 
 
-def build_match_facts(match_context: dict):
-    team_a = match_context.get('teamA', 'Team A')
-    team_b = match_context.get('teamB', 'Team B')
-    coached_team = match_context.get('coachedTeam', team_a)
-    a_goals = int(match_context.get('teamAGoals') or 0)
-    a_points = int(match_context.get('teamAPoints') or 0)
-    b_goals = int(match_context.get('teamBGoals') or 0)
-    b_points = int(match_context.get('teamBPoints') or 0)
-    a_total = a_goals * 3 + a_points
-    b_total = b_goals * 3 + b_points
-
-    if a_total > b_total:
-        winner, margin = team_a, a_total - b_total
-    elif b_total > a_total:
-        winner, margin = team_b, b_total - a_total
+def build_match_facts(ctx: dict):
+    team_a = ctx.get('teamA', 'Team A')
+    team_b = ctx.get('teamB', 'Team B')
+    coached = ctx.get('coachedTeam', team_a)
+    ag, ap = int(ctx.get('teamAGoals') or 0), int(ctx.get('teamAPoints') or 0)
+    bg, bp = int(ctx.get('teamBGoals') or 0), int(ctx.get('teamBPoints') or 0)
+    at, bt = ag * 3 + ap, bg * 3 + bp
+    if at > bt:
+        winner, margin = team_a, at - bt
+    elif bt > at:
+        winner, margin = team_b, bt - at
     else:
         winner, margin = 'Draw', 0
-
-    coached_result = 'drew' if winner == 'Draw' else ('won' if winner == coached_team else 'lost')
-    coached_goals = a_goals if coached_team == team_a else b_goals
-    opposition_goals = b_goals if coached_team == team_a else a_goals
-    coached_points = a_points if coached_team == team_a else b_points
-    opposition_points = b_points if coached_team == team_a else a_points
-    coached_total = a_total if coached_team == team_a else b_total
-    opposition_total = b_total if coached_team == team_a else a_total
-
+    result = 'drew' if winner == 'Draw' else ('won' if winner == coached else 'lost')
+    cg, og = (ag, bg) if coached == team_a else (bg, ag)
+    cp, op = (ap, bp) if coached == team_a else (bp, ap)
+    ct, ot = (at, bt) if coached == team_a else (bt, at)
     return {
-        'teamA': team_a,
-        'teamB': team_b,
-        'coachedTeam': coached_team,
-        'winner': winner,
-        'margin': margin,
-        'coachedTeamResult': coached_result,
-        'teamAGoals': a_goals,
-        'teamBGoals': b_goals,
-        'teamAPoints': a_points,
-        'teamBPoints': b_points,
-        'teamATotal': a_total,
-        'teamBTotal': b_total,
-        'coachedGoals': coached_goals,
-        'oppositionGoals': opposition_goals,
-        'coachedPoints': coached_points,
-        'oppositionPoints': opposition_points,
-        'coachedTotal': coached_total,
-        'oppositionTotal': opposition_total,
-        'goalDifference': coached_goals - opposition_goals,
-        'scoreline': f'{team_a} {a_goals}-{a_points} ({a_total}) vs {team_b} {b_goals}-{b_points} ({b_total})'
+        'teamA': team_a, 'teamB': team_b, 'coachedTeam': coached, 'winner': winner, 'margin': margin,
+        'coachedTeamResult': result, 'teamAGoals': ag, 'teamBGoals': bg, 'teamAPoints': ap,
+        'teamBPoints': bp, 'teamATotal': at, 'teamBTotal': bt, 'coachedGoals': cg,
+        'oppositionGoals': og, 'coachedPoints': cp, 'oppositionPoints': op,
+        'coachedTotal': ct, 'oppositionTotal': ot, 'goalDifference': cg - og,
+        'scoreline': f'{team_a} {ag}-{ap} ({at}) vs {team_b} {bg}-{bp} ({bt})'
     }
 
 
-def build_scoreline_rules(match_facts: dict):
-    coached_team = match_facts['coachedTeam']
+def build_scoreline_rules(facts: dict):
+    team = facts['coachedTeam']
     rules = []
-    if match_facts['coachedGoals'] >= 5:
-        rules.append(f'{coached_team} scored {match_facts["coachedGoals"]} goals. Treat goal scoring, finishing and attacking penetration as major strengths. Do NOT recommend finishing practice, goal-scoring drills, shot conversion, or improving goal threat as a main focus unless coach notes explicitly say chances were wasted.')
-        rules.append(f'For {coached_team}, focus on sustaining attacking patterns that created goals, game management, rest defence, kickout control, and protecting against counterattacks rather than more scoring practice.')
-    elif match_facts['coachedGoals'] <= 1 and match_facts['coachedTeamResult'] != 'won':
-        rules.append(f'{coached_team} had limited goal output. It is valid to focus on penetration, high-value chance creation and earlier delivery into scoring zones.')
-    if match_facts['oppositionGoals'] >= 3:
-        rules.append(f'{coached_team} conceded {match_facts["oppositionGoals"]} goals. Prioritise defensive transition, protecting central goal channels, sweeper cover, and recovery shape.')
-    elif match_facts['oppositionGoals'] <= 1:
-        rules.append(f'{coached_team} conceded {match_facts["oppositionGoals"]} goals. Do not overstate defensive collapse; defensive work should be framed as refinement, not crisis.')
-    if match_facts['coachedTeamResult'] == 'won' and match_facts['margin'] >= 10:
-        rules.append(f'{coached_team} won comfortably. Main focus areas should be about sustaining strengths and tightening risk areas, not implying the performance was poor.')
-    if match_facts['coachedTeamResult'] == 'lost' and match_facts['margin'] <= 3:
-        rules.append(f'{coached_team} lost narrowly. Focus on small swing factors: one goal chance, one kickout spell, one transition concession, or late-game decision-making.')
+    if facts['coachedGoals'] >= 5:
+        rules.append(f'{team} scored {facts["coachedGoals"]} goals. Treat goal scoring, finishing and attacking penetration as major strengths. Do NOT recommend finishing practice or improving goal threat unless coach notes explicitly say chances were wasted.')
+        rules.append(f'For {team}, focus on sustaining attacking patterns, game management, rest defence, kickout control, and protecting against counterattacks.')
+    elif facts['coachedGoals'] <= 1 and facts['coachedTeamResult'] != 'won':
+        rules.append(f'{team} had limited goal output. It is valid to focus on penetration, high-value chance creation and earlier delivery into scoring zones.')
+    if facts['oppositionGoals'] >= 3:
+        rules.append(f'{team} conceded {facts["oppositionGoals"]} goals. Prioritise defensive transition, central goal channels, sweeper cover and recovery shape.')
+    elif facts['oppositionGoals'] <= 1:
+        rules.append(f'{team} conceded {facts["oppositionGoals"]} goals. Do not overstate defensive collapse; frame defensive work as refinement.')
+    if facts['coachedTeamResult'] == 'won' and facts['margin'] >= 10:
+        rules.append(f'{team} won comfortably. Focus areas should sustain strengths and tighten risk areas, not imply poor performance.')
+    if facts['coachedTeamResult'] == 'lost' and facts['margin'] <= 3:
+        rules.append(f'{team} lost narrowly. Focus on swing factors: one goal chance, one kickout spell, one transition concession, or late-game decision-making.')
     return '\n'.join(f'- {rule}' for rule in rules) or '- Apply normal Gaelic football scoreline reasoning.'
+
+
+def normalise_scoreboard(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        'visible': bool(raw.get('visible', False)),
+        'text': str(raw.get('text', ''))[:160],
+        'scoreChangeLikely': bool(raw.get('scoreChangeLikely', False)),
+        'possibleScoreEvent': bool(raw.get('possibleScoreEvent', False)),
+        'confidence': raw.get('confidence', 'low') if raw.get('confidence') in ['low', 'medium', 'high'] else 'low',
+        'ocrText': str(raw.get('ocrText', ''))[:160],
+        'ocrZones': raw.get('ocrZones', []) if isinstance(raw.get('ocrZones', []), list) else []
+    }
+
+
+def normalise_score_outcome(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    outcome = raw.get('outcome') if raw.get('outcome') in SCORE_OUTCOMES else 'unknown'
+    confidence = raw.get('confidence') if raw.get('confidence') in ['low', 'medium', 'high'] else 'low'
+    evidence = raw.get('evidence', []) if isinstance(raw.get('evidence', []), list) else []
+    cues = raw.get('cues', {}) if isinstance(raw.get('cues', {}), dict) else {}
+    return {
+        'outcome': outcome,
+        'confidence': confidence,
+        'evidence': evidence[:8],
+        'reasoning': str(raw.get('reasoning', ''))[:300],
+        'cues': {
+            'scoreboardChange': bool(cues.get('scoreboardChange', False)),
+            'umpireSignal': str(cues.get('umpireSignal', 'not_visible'))[:80],
+            'ballPath': str(cues.get('ballPath', 'unclear'))[:80],
+            'netMovement': bool(cues.get('netMovement', False)),
+            'goalkeeperRetrieval': bool(cues.get('goalkeeperRetrieval', False)),
+            'goalkeeperRestart': bool(cues.get('goalkeeperRestart', False)),
+            'playerReaction': str(cues.get('playerReaction', 'unclear'))[:120],
+            'cameraReset': bool(cues.get('cameraReset', False)),
+            'crowdReaction': str(cues.get('crowdReaction', 'not_available'))[:80]
+        }
+    }
 
 
 def fallback_event_candidates(metadata: dict):
     duration = int(metadata.get('duration') or 0)
     times = [360, 1080, 2160, 3240] if duration <= 0 else [int(duration * f) for f in [0.12, 0.25, 0.38, 0.52, 0.68, 0.82]]
     labels = ['kickout_restart', 'fast_transition', 'scoring_chance', 'breaking_ball', 'defensive_setup', 'game_management']
-    return [
-        {
+    events = []
+    for index, seconds in enumerate(times):
+        event_type = labels[index % len(labels)]
+        events.append({
             'time': f'{format_timestamp(seconds)} approx',
             'startSecond': max(0, seconds - 15),
             'endSecond': seconds + 15,
-            'type': labels[index % len(labels)],
+            'type': event_type,
             'reason': 'Fallback checkpoint selected from match timeline.',
             'confidence': 'low',
             'classification': {
-                'eventType': labels[index % len(labels)],
+                'eventType': event_type,
                 'confidence': 'low',
                 'coachingValue': 'medium',
                 'keepForReport': True,
                 'visibleCues': ['Fallback timeline checkpoint'],
-                'coachingReason': 'Useful as a broad tactical review window when scan evidence is limited.',
-                'scoreboard': {'visible': False, 'text': '', 'scoreChangeLikely': False, 'possibleScoreEvent': False}
-            }
-        }
-        for index, seconds in enumerate(times)
-    ]
+                'coachingReason': 'Useful broad tactical review window when scan evidence is limited.',
+                'scoreboard': normalise_scoreboard({}),
+                'scoreOutcome': normalise_score_outcome({})
+            },
+            'scoreOutcome': normalise_score_outcome({})
+        })
+    return events
 
 
 def download_match_video(url: str, tmpdir: str, profile: dict):
-    video_path = os.path.join(tmpdir, 'match.mp4')
-    ydl_opts = {
+    path = os.path.join(tmpdir, 'match.mp4')
+    opts = {
         'format': profile.get('videoFormat', 'best[height<=480]/best'),
-        'outtmpl': video_path,
+        'outtmpl': path,
         'quiet': False,
         'noplaylist': True,
         'merge_output_format': 'mp4',
@@ -205,47 +238,48 @@ def download_match_video(url: str, tmpdir: str, profile: dict):
         'retries': 2,
         'fragment_retries': 2
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
-    return video_path if os.path.exists(video_path) else None
+    return path if os.path.exists(path) else None
 
 
 def scan_video_frame_differences(video_path: str, profile: dict, max_scan_seconds: int = 7200):
     interval = int(profile.get('scanIntervalSeconds', 1))
     width, height = 64, 36
     frame_size = width * height
-    command = ['ffmpeg', '-i', video_path, '-vf', f'fps=1/{interval},scale={width}:{height},format=gray', '-frames:v', str(max_scan_seconds // interval), '-f', 'rawvideo', '-']
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    previous = None
-    differences = []
-    frame_index = 0
+    cmd = ['ffmpeg', '-i', video_path, '-vf', f'fps=1/{interval},scale={width}:{height},format=gray', '-frames:v', str(max_scan_seconds // interval), '-f', 'rawvideo', '-']
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    prev, diffs, idx = None, [], 0
     try:
         while True:
-            frame = process.stdout.read(frame_size) if process.stdout else b''
+            frame = p.stdout.read(frame_size) if p.stdout else b''
             if not frame or len(frame) < frame_size:
                 break
-            if previous is not None:
-                diff = sum(abs(frame[i] - previous[i]) for i in range(frame_size)) / frame_size
-                differences.append({'second': frame_index * interval, 'difference': round(diff, 2)})
-            previous = frame
-            frame_index += 1
+            if prev is not None:
+                diff = sum(abs(frame[i] - prev[i]) for i in range(frame_size)) / frame_size
+                diffs.append({'second': idx * interval, 'difference': round(diff, 2)})
+            prev = frame
+            idx += 1
     finally:
         try:
-            process.kill()
+            p.kill()
         except Exception:
             pass
-    return differences
+    return diffs
+
+
+def classify_event_window(index: int):
+    cycle = ['kickout_restart', 'fast_transition', 'scoring_chance', 'score_or_restart_after_score', 'breaking_ball', 'defensive_setup', 'game_management', 'turnover', 'direct_ball_inside']
+    return cycle[index % len(cycle)]
 
 
 def select_event_candidates_from_differences(differences: list, max_events: int = 10):
     if not differences:
         return []
-    sorted_diffs = sorted(differences, key=lambda item: item['difference'], reverse=True)
     selected = []
-    minimum_gap_seconds = 150
-    for item in sorted_diffs:
+    for item in sorted(differences, key=lambda x: x['difference'], reverse=True):
         second = int(item['second'])
-        if all(abs(second - existing['startSecond']) > minimum_gap_seconds for existing in selected):
+        if all(abs(second - e['startSecond']) > 150 for e in selected):
             selected.append({
                 'time': f'{format_timestamp(second)} approx',
                 'startSecond': max(0, second - 20),
@@ -256,23 +290,36 @@ def select_event_candidates_from_differences(differences: list, max_events: int 
             })
         if len(selected) >= max_events:
             break
-    return sorted(selected, key=lambda item: item['startSecond'])
-
-
-def classify_event_window(index: int):
-    cycle = ['kickout_restart', 'fast_transition', 'scoring_chance', 'score_or_restart_after_score', 'breaking_ball', 'defensive_setup', 'game_management', 'turnover', 'direct_ball_inside']
-    return cycle[index % len(cycle)]
+    return sorted(selected, key=lambda x: x['startSecond'])
 
 
 def extract_event_frames(video_path: str, event: dict, tmpdir: str, event_index: int, profile: dict):
-    frame_count = int(profile.get('eventFramePack', 8))
+    count = int(profile.get('eventFramePack', 8))
     start = max(0, int(event.get('startSecond', 0)))
     end = max(start + 1, int(event.get('endSecond', start + 30)))
     duration = max(1, end - start)
-    fps = max(0.1, frame_count / duration)
-    output_pattern = os.path.join(tmpdir, f'event_{event_index}_%02d.jpg')
-    subprocess.run(['ffmpeg', '-y', '-ss', str(start), '-i', video_path, '-t', str(duration), '-vf', f'fps={fps},scale=512:-1', '-frames:v', str(frame_count), output_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    return sorted([os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.startswith(f'event_{event_index}_') and f.endswith('.jpg')])[:frame_count]
+    fps = max(0.1, count / duration)
+    pattern = os.path.join(tmpdir, f'event_{event_index}_%02d.jpg')
+    subprocess.run(['ffmpeg', '-y', '-ss', str(start), '-i', video_path, '-t', str(duration), '-vf', f'fps={fps},scale=768:-1', '-frames:v', str(count), pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return sorted([os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.startswith(f'event_{event_index}_') and f.endswith('.jpg')])[:count]
+
+
+def extract_scoreboard_crops(video_path: str, event: dict, tmpdir: str, event_index: int):
+    start = max(0, int(event.get('startSecond', 0)))
+    end = max(start + 1, int(event.get('endSecond', start + 30)))
+    timestamp = start + max(1, int((end - start) / 2))
+    crop_specs = [
+        ('top_left', 'crop=iw*0.42:ih*0.18:0:0,scale=900:-1'),
+        ('top_right', 'crop=iw*0.42:ih*0.18:iw*0.58:0,scale=900:-1'),
+        ('top_full', 'crop=iw:ih*0.20:0:0,scale=1200:-1')
+    ]
+    crops = []
+    for name, vf in crop_specs:
+        output = os.path.join(tmpdir, f'ocr_{event_index}_{name}.jpg')
+        subprocess.run(['ffmpeg', '-y', '-ss', str(timestamp), '-i', video_path, '-frames:v', '1', '-vf', vf, output], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if os.path.exists(output):
+            crops.append({'zone': name, 'path': output})
+    return crops
 
 
 def extract_event_clip(video_path: str, event: dict, job_id: str | None, event_index: int):
@@ -284,45 +331,54 @@ def extract_event_clip(video_path: str, event: dict, job_id: str | None, event_i
     end = max(start + 1, int(event.get('endSecond', start + 30)))
     duration = min(45, max(8, end - start))
     clip_id = f'clip_{event_index:02d}'
-    output_path = os.path.join(clip_dir, f'{clip_id}.mp4')
-    subprocess.run(['ffmpeg', '-y', '-ss', str(start), '-i', video_path, '-t', str(duration), '-vf', 'scale=640:-2', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-an', '-movflags', '+faststart', output_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    if not os.path.exists(output_path):
+    output = os.path.join(clip_dir, f'{clip_id}.mp4')
+    subprocess.run(['ffmpeg', '-y', '-ss', str(start), '-i', video_path, '-t', str(duration), '-vf', 'scale=640:-2', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-an', '-movflags', '+faststart', output], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if not os.path.exists(output):
         return None
-    return {'clipId': clip_id, 'filename': f'{clip_id}.mp4', 'startSecond': start, 'endSecond': start + duration, 'duration': duration, 'time': f'{format_timestamp(start)}–{format_timestamp(start + duration)} approx', 'type': event.get('type', 'review clip'), 'downloadPath': f'/analysis-jobs/{job_id}/clips/{clip_id}'}
-
-
-def parse_json_safely(text: str):
-    try:
-        return json.loads(text)
-    except Exception:
-        try:
-            return json.loads(text[text.index('{'):text.rindex('}') + 1])
-        except Exception:
-            return None
-
-
-def normalise_scoreboard(raw):
-    raw = raw if isinstance(raw, dict) else {}
     return {
-        'visible': bool(raw.get('visible', False)),
-        'text': str(raw.get('text', ''))[:120],
-        'scoreChangeLikely': bool(raw.get('scoreChangeLikely', False)),
-        'possibleScoreEvent': bool(raw.get('possibleScoreEvent', False)),
-        'confidence': raw.get('confidence', 'low') if raw.get('confidence') in ['low', 'medium', 'high'] else 'low'
+        'clipId': clip_id,
+        'filename': f'{clip_id}.mp4',
+        'startSecond': start,
+        'endSecond': start + duration,
+        'duration': duration,
+        'time': f'{format_timestamp(start)}–{format_timestamp(start + duration)} approx',
+        'type': event.get('type', 'review clip'),
+        'downloadPath': f'/analysis-jobs/{job_id}/clips/{clip_id}'
     }
 
 
-def classify_event_frames(client: OpenAI, frame_paths: list, event: dict):
+def read_scoreboard_ocr(client: OpenAI, crop_items: list):
+    if not crop_items:
+        return normalise_scoreboard({})
+    content = [{'type': 'text', 'text': 'Read any visible Gaelic football scoreboard or score bug from these cropped image zones. Return JSON only: {"visible": true, "ocrText": "exact readable scoreboard text only", "ocrZones": ["top_left"], "confidence": "low|medium|high"}. If no scoreboard is readable, return {"visible": false, "ocrText": "", "ocrZones": [], "confidence": "low"}. Do not guess.'}]
+    content += image_content_from_paths(crop_items)
+    response = client.chat.completions.create(model='gpt-4o-mini', response_format={'type': 'json_object'}, messages=[{'role': 'user', 'content': content}])
+    parsed = parse_json_safely(response.choices[0].message.content or '{}') or {}
+    return normalise_scoreboard({'visible': parsed.get('visible'), 'ocrText': parsed.get('ocrText', ''), 'text': parsed.get('ocrText', ''), 'ocrZones': parsed.get('ocrZones', []), 'confidence': parsed.get('confidence', 'low')})
+
+
+def classify_event_frames(client: OpenAI, frame_paths: list, event: dict, scoreboard_ocr: dict):
     if not frame_paths:
-        return {'eventType': event.get('type', 'not_useful'), 'confidence': 'low', 'coachingValue': 'low', 'keepForReport': False, 'visibleCues': [], 'coachingReason': 'No frames available for classification.', 'visualSummary': '', 'scoreboard': normalise_scoreboard({})}
+        return {
+            'eventType': event.get('type', 'not_useful'),
+            'confidence': 'low',
+            'coachingValue': 'low',
+            'keepForReport': False,
+            'visibleCues': [],
+            'coachingReason': 'No frames available for classification.',
+            'visualSummary': '',
+            'scoreboard': scoreboard_ocr,
+            'scoreOutcome': normalise_score_outcome({})
+        }
 
     content = [{
         'type': 'text',
-        'text': f'''Classify this approximate Gaelic football review window using ONLY visible evidence from the frames.
+        'text': f'''Classify this Gaelic football review window using ONLY visible evidence from the frames.
 
 Candidate time: {event.get('time')}
 Initial candidate type: {event.get('type')}
 Reason selected: {event.get('reason')}
+OCR scoreboard crop result: {scoreboard_ocr}
 
 Return valid JSON only with this exact shape:
 {{
@@ -330,38 +386,60 @@ Return valid JSON only with this exact shape:
   "confidence": "low|medium|high",
   "coachingValue": "low|medium|high",
   "keepForReport": true,
-  "visibleCues": ["short visible cue 1", "short visible cue 2"],
-  "coachingReason": "one sentence on why a Gaelic football coach should review this",
+  "visibleCues": ["short visible cue"],
+  "coachingReason": "one sentence",
   "visualSummary": "one concise Gaelic football tactical observation",
   "scoreboard": {{
     "visible": true,
-    "text": "only scoreboard text you can read, otherwise empty string",
+    "text": "scoreboard text you can read or OCR text",
     "scoreChangeLikely": false,
     "possibleScoreEvent": false,
     "confidence": "low|medium|high"
+  }},
+  "scoreOutcome": {{
+    "outcome": "point|goal|wide|save|blocked|unknown",
+    "confidence": "low|medium|high",
+    "evidence": ["specific visible evidence"],
+    "reasoning": "short explanation",
+    "cues": {{
+      "scoreboardChange": false,
+      "umpireSignal": "white_flag|green_flag|wide_signal|not_visible|unclear",
+      "ballPath": "between_posts|outside_posts|towards_goal|saved|blocked|unclear",
+      "netMovement": false,
+      "goalkeeperRetrieval": false,
+      "goalkeeperRestart": false,
+      "playerReaction": "celebration|frustration|reset|unclear",
+      "cameraReset": false,
+      "crowdReaction": "spike|normal|not_available"
+    }}
   }}
 }}
 
-Scoreboard guidance:
-- Only set scoreboard.visible true if a scoreboard or score bug is actually visible.
-- Only copy scoreboard text if legible.
-- Set possibleScoreEvent true if frames suggest a score, wide, free, restart after score, scoreboard change, umpire/goalkeeper restart, or players resetting after a score.
-- Set scoreChangeLikely true only if a scoreboard appears to change within the frame pack or the visual sequence strongly suggests a just-completed score.
-
-Do not invent scorers, exact scores, player names, or exact possession outcomes. Prefer Gaelic football cues: kickout shape, middle-third transition, D protection, support runners, direct ball inside, breaking ball, shot selection, counter-press, runners from deep, defensive screen.'''
+Conservative Gaelic football scoring rules:
+- Only classify POINT if there is strong evidence: scoreboard change, umpire white flag, or a clearly visible ball path between the posts.
+- Only classify GOAL if there is strong evidence: umpire green flag, ball/net movement in goal, goalkeeper retrieval from net, or scoreboard goal change.
+- Classify WIDE if the umpire wide signal is visible, ball path is clearly outside the posts, or player/reset cues strongly support a wide.
+- Classify SAVE if goalkeeper/body save is visible or ball is stopped on/near goal line.
+- Classify BLOCKED if defender blocks the shot before it reaches scoring zone.
+- If the clip only shows a kickout/restart and no clear outcome, use UNKNOWN, not point.
+- Scoreboard is helpful but often absent in amateur footage. Do not require it, but do not invent it.
+- Never invent scorers, exact scores, player names, or exact possession outcomes.'''
     }]
-
-    for frame_path in frame_paths:
-        with open(frame_path, 'rb') as image_file:
-            encoded = base64.b64encode(image_file.read()).decode('utf-8')
-        content.append({'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}', 'detail': 'low'}})
+    content += image_content_from_paths(frame_paths)
 
     response = client.chat.completions.create(model='gpt-4o-mini', response_format={'type': 'json_object'}, messages=[{'role': 'user', 'content': content}])
     parsed = parse_json_safely(response.choices[0].message.content or '{}') or {}
-    scoreboard = normalise_scoreboard(parsed.get('scoreboard', {}))
+    parsed_scoreboard = parsed.get('scoreboard', {}) if isinstance(parsed.get('scoreboard'), dict) else {}
+    scoreboard = normalise_scoreboard({**scoreboard_ocr, **parsed_scoreboard})
+    if not scoreboard.get('text') and scoreboard.get('ocrText'):
+        scoreboard['text'] = scoreboard['ocrText']
+    score_outcome = normalise_score_outcome(parsed.get('scoreOutcome', {}))
+
     event_type = parsed.get('eventType') if parsed.get('eventType') in EVENT_TYPES else event.get('type', 'not_useful')
-    if scoreboard['possibleScoreEvent'] and event_type not in ['scoring_chance', 'score_or_restart_after_score']:
-        event_type = 'score_or_restart_after_score'
+    if score_outcome['outcome'] in ['point', 'goal', 'wide'] or scoreboard['possibleScoreEvent']:
+        if event_type not in ['scoring_chance', 'score_or_restart_after_score']:
+            event_type = 'score_or_restart_after_score'
+
     return {
         'eventType': event_type,
         'confidence': parsed.get('confidence', 'low'),
@@ -370,7 +448,8 @@ Do not invent scorers, exact scores, player names, or exact possession outcomes.
         'visibleCues': parsed.get('visibleCues', []) if isinstance(parsed.get('visibleCues', []), list) else [],
         'coachingReason': parsed.get('coachingReason', ''),
         'visualSummary': parsed.get('visualSummary', ''),
-        'scoreboard': scoreboard
+        'scoreboard': scoreboard,
+        'scoreOutcome': score_outcome
     }
 
 
@@ -386,63 +465,63 @@ def build_event_candidates(url: str, metadata: dict, profile: dict, client: Open
             set_job_stage(job_id, 'event_selection', 'Selecting the strongest candidate review windows')
             candidates = select_event_candidates_from_differences(differences) or fallback_event_candidates(metadata)
             if client:
-                set_job_stage(job_id, 'event_analysis', 'Classifying visual frame packs and scoreboard/scoring cues')
+                set_job_stage(job_id, 'event_analysis', 'Classifying tactical events, score outcomes and scoreboard cues')
                 enriched = []
                 clip_count = int(profile.get('clipCount', 6))
                 for index, event in enumerate(candidates[:clip_count], start=1):
                     frame_paths = extract_event_frames(video_path, event, tmpdir, index, profile)
-                    classification = classify_event_frames(client, frame_paths, event)
+                    scoreboard_ocr = read_scoreboard_ocr(client, extract_scoreboard_crops(video_path, event, tmpdir, index))
+                    classification = classify_event_frames(client, frame_paths, event, scoreboard_ocr)
                     if not classification.get('keepForReport') and classification.get('coachingValue') == 'low':
                         continue
                     event_type = classification.get('eventType', event.get('type'))
-                    event_for_clip = {**event, 'type': event_type}
-                    clip = extract_event_clip(video_path, event_for_clip, job_id, index)
-                    enriched.append({**event, 'type': event_type, 'classification': classification, 'visualAnalysis': classification.get('visualSummary', ''), 'scoreboard': classification.get('scoreboard'), 'framesAnalysed': len(frame_paths), 'clip': clip})
+                    clip = extract_event_clip(video_path, {**event, 'type': event_type}, job_id, index)
+                    enriched.append({
+                        **event,
+                        'type': event_type,
+                        'classification': classification,
+                        'visualAnalysis': classification.get('visualSummary', ''),
+                        'scoreboard': classification.get('scoreboard'),
+                        'scoreOutcome': classification.get('scoreOutcome'),
+                        'framesAnalysed': len(frame_paths),
+                        'clip': clip
+                    })
                 return enriched + candidates[clip_count:]
             return candidates
     except Exception:
         return fallback_event_candidates(metadata)
 
 
-def build_report_prompt(coached_team, opposition_team, match_facts, scoreline_rules, metadata, event_candidates, notes, profile):
+def build_report_prompt(coached_team, opposition_team, facts, rules, metadata, events, notes, profile):
     return f'''
 You are an elite Gaelic football performance analyst working directly for {coached_team}.
-
-Create a short Gaelic football manager debrief for {coached_team}. Use classified event evidence, scoreboard/scoring cues and clips as approximate review evidence, not absolute proof.
+Create a short Gaelic football manager debrief for {coached_team}. Use classified event evidence, score outcome cues, OCR scoreboard reads and clips as approximate review evidence, not absolute proof.
 
 MATCH FACTS:
-{match_facts}
-
+{facts}
 SCORELINE-AWARE COACHING RULES:
-{scoreline_rules}
-
+{rules}
 VIDEO METADATA:
 {metadata}
-
-CLASSIFIED EVENT WINDOWS WITH SCOREBOARD/SCORING CUES, VISUAL ANALYSIS AND CLIPS:
-{event_candidates}
-
+CLASSIFIED EVENT WINDOWS WITH SCORE OUTCOMES, VISUAL ANALYSIS AND CLIPS:
+{events}
 COACH NOTES:
 {notes}
-
 PROCESSING PROFILE:
 {profile}
 
 RULES:
-- This is Gaelic football. Use authentic GAA language: kickouts, breaking ball, middle third, runners from deep, direct ball inside, support runners, scoring zone, D protection, sweeper cover, counter-press after turnover, kick-pass threat, running game, shot selection, game management, scoring bursts, rest defence, defensive screen.
-- Scoreboard text and score-event flags are approximate. Never invent exact scorers or exact scores from them.
-- Do not contradict the user-provided final scoreline, winner or margin.
-- Focus primarily on {coached_team}. Opposition analysis should only explain what hurt or exposed {coached_team}.
-- Keep every table cell useful: never output only ✅, ❌ or ⚠️ by itself.
-- No confidence notes. No long paragraphs.
+- This is Gaelic football. Use GAA language: kickouts, breaking ball, middle third, runners from deep, direct ball inside, support runners, scoring zone, D protection, sweeper cover, counter-press after turnover, kick-pass threat, running game, shot selection, game management, scoring bursts, rest defence.
+- scoreOutcome is approximate. Use point/goal/wide/save/blocked only when the event evidence supports it. If unclear, say likely scoring/restart phase or unknown outcome.
+- Never contradict the user-provided final scoreline. Never invent scorers.
+- Focus primarily on {coached_team}. Keep table cells useful. No confidence notes. No long paragraphs.
 
 Return this exact markdown structure and nothing else:
-
 # {coached_team} – Match Snapshot
 | Item | Detail |
 |---|---|
-| Scoreline | {match_facts['scoreline']} |
-| Result | {coached_team} {match_facts['coachedTeamResult']} by {match_facts['margin']} point(s) |
+| Scoreline | {facts['scoreline']} |
+| Result | {coached_team} {facts['coachedTeamResult']} by {facts['margin']} point(s) |
 | Core Story | One direct Gaelic football tactical sentence explaining why the game went this way from the perspective of {coached_team}. |
 
 # {coached_team} – Match-Deciding Factor
@@ -453,9 +532,9 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 |---|---|---|
 | Possession | estimated range/label + Gaelic football observation + ✅/⚠️/❌ | estimated range/label + Gaelic football observation + ✅/⚠️/❌ |
 | Shot Creation | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
-| Goal Threat | {match_facts['coachedGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ | {match_facts['oppositionGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ |
-| Point Output | {match_facts['coachedPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ | {match_facts['oppositionPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ |
-| Scoring Bursts | use score/scoring-event cues if available + estimated label | use score/scoring-event cues if available + estimated label |
+| Goal Threat | {facts['coachedGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ | {facts['oppositionGoals']} goals + Gaelic football tactical label + ✅/⚠️/❌ |
+| Point Output | {facts['coachedPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ | {facts['oppositionPoints']} points + Gaelic football tactical label + ✅/⚠️/❌ |
+| Scoring Bursts | use score outcome cues if available + estimated label | use score outcome cues if available + estimated label |
 | Kickout / Restart Retention | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
 | Breaking Ball | estimated label + Gaelic football observation + ✅/⚠️/❌ | estimated label + Gaelic football observation + ✅/⚠️/❌ |
 | Defensive Scores Conceded | based on opponent total + Gaelic football defensive label + ✅/⚠️/❌ | based on opponent total + Gaelic football defensive label + ✅/⚠️/❌ |
@@ -473,9 +552,9 @@ One blunt Gaelic football paragraph, maximum 45 words. Explain the one factor th
 | D Protection / Defensive Screen | Gaelic football observation + ✅/⚠️/❌ | Gaelic football observation + ✅/⚠️/❌ |
 
 # {coached_team} – Review Clips
-| Clip | Event Type | Why Review It |
-|---|---|---|
-| Use available clip links from classified events | event type | one specific coaching reason |
+| Clip | Event Type | Score Outcome | Why Review It |
+|---|---|---|---|
+| Use available clip links from classified events | event type | point/goal/wide/save/blocked/unknown | one specific coaching reason |
 
 # {coached_team} – Main Focus Areas Going Forward
 | Priority | Why It Matters For {coached_team} | Coaching Action |
@@ -497,20 +576,34 @@ def generate_analysis(request: AnalyseRequest, job_id: str | None = None):
     profile = processing_profile(request.url)
     set_job_stage(job_id, 'metadata', 'Reading video title, duration and match metadata')
     metadata = extract_video_metadata(request.url)
-    event_candidates = build_event_candidates(request.url, metadata, profile, client, job_id)
+    events = build_event_candidates(request.url, metadata, profile, client, job_id)
     set_job_stage(job_id, 'clip_extraction', 'Review clips created for selected moments')
-    match_facts = build_match_facts(request.matchContext or {})
-    coached_team = match_facts['coachedTeam']
-    opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
-    prompt = build_report_prompt(coached_team, opposition_team, match_facts, build_scoreline_rules(match_facts), metadata, event_candidates, request.notes, profile)
+    facts = build_match_facts(request.matchContext or {})
+    coached = facts['coachedTeam']
+    opposition = facts['teamB'] if facts['teamA'] == coached else facts['teamA']
+    prompt = build_report_prompt(coached, opposition, facts, build_scoreline_rules(facts), metadata, events, request.notes, profile)
     set_job_stage(job_id, 'report', 'Building final manager debrief report')
-    response = client.chat.completions.create(model='gpt-4o-mini', messages=[{'role': 'system', 'content': 'You produce concise Gaelic football manager debrief reports using classified event evidence, scoreboard/scoring cues, scoreline-aware tactical insights, estimated key stats and actionable training priorities.'}, {'role': 'user', 'content': prompt}])
-    analysis = response.choices[0].message.content
-    clips = [event.get('clip') for event in event_candidates if isinstance(event, dict) and event.get('clip')]
-    classifications = [event.get('classification') for event in event_candidates if isinstance(event, dict) and event.get('classification')]
-    scoreboard_events = [event for event in event_candidates if isinstance(event, dict) and event.get('scoreboard', {}).get('visible')]
-    scoring_cues = [event for event in event_candidates if isinstance(event, dict) and event.get('scoreboard', {}).get('possibleScoreEvent')]
-    return {'status': 'complete', 'mode': 'worker', 'analysis': analysis, 'videoMetadata': metadata, 'matchFacts': match_facts, 'processingProfile': profile['name'], 'eventCandidates': event_candidates, 'eventClassifications': classifications, 'scoreboardEvents': scoreboard_events, 'scoringCues': scoring_cues, 'clips': clips}
+    response = client.chat.completions.create(model='gpt-4o-mini', messages=[
+        {'role': 'system', 'content': 'You produce concise Gaelic football manager debrief reports using classified event evidence, score outcome cues, scoreline-aware tactical insights and actionable training priorities.'},
+        {'role': 'user', 'content': prompt}
+    ])
+    clips = [e.get('clip') for e in events if isinstance(e, dict) and e.get('clip')]
+    classifications = [e.get('classification') for e in events if isinstance(e, dict) and e.get('classification')]
+    scoreboard_events = [e for e in events if isinstance(e, dict) and e.get('scoreboard', {}).get('visible')]
+    scoring_cues = [e for e in events if isinstance(e, dict) and e.get('scoreOutcome', {}).get('outcome') != 'unknown']
+    return {
+        'status': 'complete',
+        'mode': 'worker',
+        'analysis': response.choices[0].message.content,
+        'videoMetadata': metadata,
+        'matchFacts': facts,
+        'processingProfile': profile['name'],
+        'eventCandidates': events,
+        'eventClassifications': classifications,
+        'scoreboardEvents': scoreboard_events,
+        'scoringCues': scoring_cues,
+        'clips': clips
+    }
 
 
 def run_analysis_job(job_id: str, request: AnalyseRequest):
