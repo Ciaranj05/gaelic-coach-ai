@@ -29,64 +29,112 @@ function escapeHtml(value: string) {
 }
 
 function cleanMarkdown(value: string) {
-  return value
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/^[-*]\s+/, '')
-    .trim()
+  return value.replace(/\*\*(.*?)\*\*/g, '$1').replace(/^[-*]\s+/, '').trim()
 }
 
 function sectionMeta(title: string) {
   const lower = title.toLowerCase()
-  if (lower.includes('result')) return { label: 'Match Verdict', icon: '🏁', accent: 'emerald' }
-  if (lower.includes('timestamp')) return { label: 'Video Review', icon: '⏱️', accent: 'blue' }
-  if (lower.includes('why')) return { label: 'Performance Cause', icon: '🧠', accent: 'indigo' }
+  if (lower.includes('dashboard') || lower.includes('snapshot')) return { label: 'Overview', icon: '🏁', accent: 'emerald' }
+  if (lower.includes('takeaway')) return { label: 'Coach Insight', icon: '💡', accent: 'indigo' }
+  if (lower.includes('comparison')) return { label: 'Team Comparison', icon: '📊', accent: 'blue' }
+  if (lower.includes('moment')) return { label: 'Review Timeline', icon: '⏱️', accent: 'blue' }
   if (lower.includes('strength')) return { label: 'Positive Themes', icon: '✅', accent: 'emerald' }
-  if (lower.includes('weakness') || lower.includes('risk')) return { label: 'Risk Areas', icon: '⚠️', accent: 'amber' }
-  if (lower.includes('hurt')) return { label: 'Opposition Impact', icon: '🎯', accent: 'rose' }
-  if (lower.includes('tactical')) return { label: 'Tactical Review', icon: '📋', accent: 'slate' }
+  if (lower.includes('issue') || lower.includes('risk') || lower.includes('fix')) return { label: 'Priority Fixes', icon: '⚠️', accent: 'amber' }
   if (lower.includes('training')) return { label: 'Session Plan', icon: '🏋️', accent: 'emerald' }
-  if (lower.includes('confidence')) return { label: 'Evidence Quality', icon: '🔎', accent: 'blue' }
+  if (lower.includes('confidence')) return { label: 'Evidence Quality', icon: '🔎', accent: 'slate' }
   return { label: 'Analysis', icon: '•', accent: 'slate' }
 }
 
+function isTableLine(line: string) {
+  return line.startsWith('|') && line.endsWith('|')
+}
+
+function isSeparatorLine(line: string) {
+  return /^\|?[\s:-]+(\|[\s:-]+)+\|?$/.test(line)
+}
+
+function parseTableRow(line: string) {
+  return line
+    .split('|')
+    .slice(1, -1)
+    .map((cell) => cleanMarkdown(cell.trim()))
+}
+
+function renderMarkdownTable(rows: string[]) {
+  const cleanRows = rows.filter((row) => !isSeparatorLine(row))
+  if (cleanRows.length < 2) return ''
+
+  const headers = parseTableRow(cleanRows[0])
+  const bodyRows = cleanRows.slice(1).map(parseTableRow).filter((row) => row.some(Boolean))
+
+  return `<div class="table-wrap"><table class="analysis-table"><thead><tr>${headers
+    .map((header) => `<th>${escapeHtml(header)}</th>`)
+    .join('')}</tr></thead><tbody>${bodyRows
+    .map((row) => `<tr>${headers.map((_, index) => `<td>${escapeHtml(row[index] ?? '')}</td>`).join('')}</tr>`)
+    .join('')}</tbody></table></div>`
+}
+
+function renderSectionBody(lines: string[]) {
+  const html: string[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index]
+
+    if (isTableLine(line)) {
+      const tableLines: string[] = []
+      while (index < lines.length && isTableLine(lines[index])) {
+        tableLines.push(lines[index])
+        index += 1
+      }
+      html.push(renderMarkdownTable(tableLines))
+      continue
+    }
+
+    const numbered = line.match(/^\d+\.\s+(.*)$/)
+    if (numbered) {
+      const cleaned = cleanMarkdown(numbered[1])
+      const [title, ...rest] = cleaned.split(':')
+      const detail = rest.join(':').trim()
+      html.push(`<div class="insight-row"><strong>${escapeHtml(title)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ''}</div>`)
+      index += 1
+      continue
+    }
+
+    const bullet = line.match(/^[-*]\s+(.*)$/)
+    if (bullet) {
+      html.push(`<div class="insight-row"><span>${escapeHtml(cleanMarkdown(bullet[1]))}</span></div>`)
+      index += 1
+      continue
+    }
+
+    html.push(`<p>${escapeHtml(cleanMarkdown(line))}</p>`)
+    index += 1
+  }
+
+  return html.join('')
+}
+
 function renderPremiumAnalysis(markdown: string) {
-  const lines = markdown.split('\n')
+  const lines = markdown.split('\n').map((line) => line.trim()).filter(Boolean)
   const sections: { title: string; body: string[] }[] = []
   let current: { title: string; body: string[] } | null = null
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line) continue
+  for (const line of lines) {
     if (line.startsWith('# ')) {
       if (current) sections.push(current)
       current = { title: cleanMarkdown(line.replace(/^#\s+/, '')), body: [] }
     } else if (current) {
       current.body.push(line)
     } else {
-      current = { title: 'Executive Summary', body: [line] }
+      current = { title: 'Match Dashboard', body: [line] }
     }
   }
+
   if (current) sections.push(current)
 
   return sections.map((section) => {
     const meta = sectionMeta(section.title)
-    const bodyHtml = section.body.map((line) => {
-      const numbered = line.match(/^\d+\.\s+(.*)$/)
-      if (numbered) {
-        const cleaned = cleanMarkdown(numbered[1])
-        const [title, ...rest] = cleaned.split(':')
-        const detail = rest.join(':').trim()
-        return `<div class="insight-card"><div class="insight-title">${escapeHtml(title)}</div>${detail ? `<div class="insight-copy">${escapeHtml(detail)}</div>` : ''}</div>`
-      }
-
-      const bullet = line.match(/^[-*]\s+(.*)$/)
-      if (bullet) {
-        return `<div class="insight-card compact"><div class="insight-copy">${escapeHtml(cleanMarkdown(bullet[1]))}</div></div>`
-      }
-
-      return `<p>${escapeHtml(cleanMarkdown(line))}</p>`
-    }).join('')
-
     return `<section class="report-section ${meta.accent}">
       <div class="section-heading">
         <div class="section-icon">${meta.icon}</div>
@@ -95,21 +143,17 @@ function renderPremiumAnalysis(markdown: string) {
           <h2>${escapeHtml(section.title)}</h2>
         </div>
       </div>
-      <div class="section-body">${bodyHtml}</div>
+      <div class="section-body">${renderSectionBody(section.body)}</div>
     </section>`
   }).join('')
 }
 
-function renderList(items: string[]) {
-  return items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')
-}
-
 function downloadReport(report: Report, matchTitle: string) {
   const fullReport = report.rawAnalysis || [
-    `# Executive Summary`,
+    `# Match Dashboard`,
     report.summary,
     ``,
-    `# Key Tactical Themes`,
+    `# Tactical Comparison`,
     ...report.keyInsights.map((item) => `- ${item}`),
     ``,
     `# Training Priorities`,
@@ -126,53 +170,56 @@ function downloadReport(report: Report, matchTitle: string) {
   <title>${escapeHtml(matchTitle)} - Gaelic Coach AI Report</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; background: linear-gradient(180deg,#f8fafc,#eef7f2); color: #0f172a; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-    .page { max-width: 1040px; margin: 38px auto; background: rgba(255,255,255,.92); border: 1px solid #e2e8f0; border-radius: 34px; overflow: hidden; box-shadow: 0 30px 90px rgba(15,23,42,.13); }
-    .hero { background: radial-gradient(circle at top right,rgba(16,185,129,.28),transparent 28%), linear-gradient(135deg,#0f172a,#064e3b); color: white; padding: 46px; }
+    body { margin: 0; background: #f4f7f6; color: #0f172a; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .page { max-width: 1080px; margin: 32px auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 28px; overflow: hidden; box-shadow: 0 28px 80px rgba(15,23,42,.12); }
+    .hero { background: linear-gradient(135deg,#061826,#065f46); color: white; padding: 42px 46px; }
     .brand { display:flex; align-items:center; gap:12px; }
-    .logo { width:44px; height:44px; border-radius:16px; background:#10b981; display:flex; align-items:center; justify-content:center; font-weight:900; }
+    .logo { width:44px; height:44px; border-radius:14px; background:#10b981; display:flex; align-items:center; justify-content:center; font-weight:900; }
     .eyebrow { color: #a7f3d0; font-size: 12px; text-transform: uppercase; letter-spacing: .22em; font-weight: 800; }
-    h1 { margin: 24px 0 0; font-size: 42px; line-height: 1.04; letter-spacing: -.04em; max-width: 760px; }
-    .meta { margin-top: 16px; color: #d1fae5; font-size: 15px; font-weight: 600; }
-    .content { padding: 38px 42px 46px; }
-    .grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin-bottom: 28px; }
-    .stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 22px; padding: 20px; }
-    .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .14em; font-weight: 800; }
-    .value { margin-top: 9px; font-size: 16px; font-weight: 850; color:#0f172a; }
-    .report-section { margin-top: 24px; border: 1px solid #e2e8f0; border-radius: 28px; background: #fff; overflow: hidden; }
-    .report-section.emerald { border-color: #bbf7d0; background: linear-gradient(180deg,#ffffff,#f0fdf4); }
-    .report-section.amber { border-color: #fde68a; background: linear-gradient(180deg,#ffffff,#fffbeb); }
-    .report-section.blue { border-color: #bfdbfe; background: linear-gradient(180deg,#ffffff,#eff6ff); }
-    .report-section.indigo { border-color: #c7d2fe; background: linear-gradient(180deg,#ffffff,#eef2ff); }
-    .report-section.rose { border-color: #fecdd3; background: linear-gradient(180deg,#ffffff,#fff1f2); }
-    .section-heading { display:flex; gap:14px; align-items:center; padding: 22px 24px; border-bottom: 1px solid rgba(148,163,184,.25); }
-    .section-icon { width:44px; height:44px; border-radius:16px; background:#0f172a; color:white; display:flex; align-items:center; justify-content:center; font-size:20px; }
-    .section-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .18em; font-weight: 900; }
-    h2 { margin: 4px 0 0; font-size: 24px; line-height: 1.15; letter-spacing: -.025em; }
-    .section-body { padding: 22px 24px 24px; }
-    p { margin: 0 0 14px; color: #334155; line-height: 1.75; font-size: 15px; }
-    .insight-card { background: rgba(255,255,255,.78); border: 1px solid rgba(148,163,184,.28); border-radius: 18px; padding: 16px 18px; margin: 10px 0; box-shadow: 0 6px 18px rgba(15,23,42,.04); }
-    .insight-card.compact { padding: 14px 16px; }
-    .insight-title { font-size: 15px; font-weight: 850; color:#0f172a; margin-bottom: 6px; }
-    .insight-copy { color:#475569; line-height:1.65; font-size:14px; }
-    ul { padding-left: 20px; color: #334155; line-height: 1.7; }
-    li { margin-bottom: 8px; }
-    .footer { border-top: 1px solid #e2e8f0; padding-top: 18px; margin-top: 32px; color: #64748b; font-size: 12px; }
+    h1 { margin: 22px 0 0; font-size: 40px; line-height: 1.05; letter-spacing: -.04em; }
+    .meta { margin-top: 14px; color: #d1fae5; font-size: 15px; font-weight: 650; }
+    .content { padding: 34px 40px 44px; }
+    .grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin-bottom: 22px; }
+    .stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 18px; padding: 18px; }
+    .label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .16em; font-weight: 900; }
+    .value { margin-top: 8px; font-size: 16px; font-weight: 850; color:#0f172a; }
+    .report-section { margin-top: 18px; border: 1px solid #e2e8f0; border-radius: 22px; background: #fff; overflow: hidden; }
+    .report-section.emerald { border-color: #bbf7d0; }
+    .report-section.amber { border-color: #fde68a; }
+    .report-section.blue { border-color: #bfdbfe; }
+    .report-section.indigo { border-color: #c7d2fe; }
+    .section-heading { display:flex; gap:13px; align-items:center; padding: 18px 20px; border-bottom: 1px solid #e2e8f0; background:#fbfdff; }
+    .section-icon { width:38px; height:38px; border-radius:12px; background:#0f172a; color:white; display:flex; align-items:center; justify-content:center; font-size:17px; }
+    .section-label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .2em; font-weight: 900; }
+    h2 { margin: 3px 0 0; font-size: 22px; line-height: 1.15; letter-spacing: -.03em; }
+    .section-body { padding: 18px 20px 20px; }
+    p { margin: 0 0 12px; color: #334155; line-height: 1.65; font-size: 14px; }
+    .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 16px; background: #fff; }
+    .analysis-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .analysis-table th { background: #f1f5f9; color: #334155; text-align: left; padding: 13px 14px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid #e2e8f0; }
+    .analysis-table td { padding: 14px; border-bottom: 1px solid #eef2f7; color: #334155; line-height: 1.5; vertical-align: top; }
+    .analysis-table tr:last-child td { border-bottom: 0; }
+    .analysis-table td:first-child { font-weight: 800; color: #0f172a; width: 24%; }
+    .insight-row { border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 14px; padding: 13px 14px; margin: 8px 0; color:#334155; line-height:1.55; font-size: 14px; }
+    .insight-row strong { display:block; color:#0f172a; margin-bottom: 4px; }
+    .insight-row span { color:#475569; }
+    .footer { border-top: 1px solid #e2e8f0; padding-top: 16px; margin-top: 28px; color: #64748b; font-size: 12px; }
     @media print { body { background: white; } .page { margin: 0; box-shadow: none; border-radius: 0; } }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .content { padding: 22px; } .hero { padding: 32px 24px; } }
   </style>
 </head>
 <body>
   <div class="page">
     <div class="hero">
-      <div class="brand"><div class="logo">GC</div><div><div class="eyebrow">Gaelic Coach AI</div><div>Premium Tactical Report</div></div></div>
+      <div class="brand"><div class="logo">GC</div><div><div class="eyebrow">Gaelic Coach AI</div><div>Premium Tactical Dashboard</div></div></div>
       <h1>${escapeHtml(matchTitle)}</h1>
       <div class="meta">AI-assisted tactical report • ${escapeHtml(report.scoreline)}</div>
     </div>
     <div class="content">
       <div class="grid">
         <div class="stat"><div class="label">Scoreline</div><div class="value">${escapeHtml(report.scoreline)}</div></div>
-        <div class="stat"><div class="label">Themes</div><div class="value">${report.keyInsights.length} insights</div></div>
-        <div class="stat"><div class="label">Training</div><div class="value">${report.trainingFocus.length} priorities</div></div>
+        <div class="stat"><div class="label">Format</div><div class="value">Comparison dashboard</div></div>
+        <div class="stat"><div class="label">Output</div><div class="value">Coach actions</div></div>
       </div>
       ${renderPremiumAnalysis(fullReport)}
       <div class="footer">Generated by Gaelic Coach AI. This report should support, not replace, coach judgement and video review.</div>
