@@ -65,6 +65,13 @@ def build_match_facts(match_context: dict):
         winner, loser, margin = 'Draw', 'Draw', 0
 
     coached_result = 'drew' if winner == 'Draw' else ('won' if winner == coached_team else 'lost')
+    coached_goals = a_goals if coached_team == team_a else b_goals
+    opposition_goals = b_goals if coached_team == team_a else a_goals
+    coached_points = a_points if coached_team == team_a else b_points
+    opposition_points = b_points if coached_team == team_a else a_points
+    coached_total = a_total if coached_team == team_a else b_total
+    opposition_total = b_total if coached_team == team_a else a_total
+
     return {
         'teamA': team_a,
         'teamB': team_b,
@@ -79,9 +86,39 @@ def build_match_facts(match_context: dict):
         'teamBPoints': b_points,
         'teamATotal': a_total,
         'teamBTotal': b_total,
-        'goalDifference': a_goals - b_goals,
+        'coachedGoals': coached_goals,
+        'oppositionGoals': opposition_goals,
+        'coachedPoints': coached_points,
+        'oppositionPoints': opposition_points,
+        'coachedTotal': coached_total,
+        'oppositionTotal': opposition_total,
+        'goalDifference': coached_goals - opposition_goals,
         'scoreline': f'{team_a} {a_goals}-{a_points} ({a_total}) vs {team_b} {b_goals}-{b_points} ({b_total})'
     }
+
+
+def build_scoreline_rules(match_facts: dict):
+    coached_team = match_facts['coachedTeam']
+    rules = []
+
+    if match_facts['coachedGoals'] >= 5:
+        rules.append(f'{coached_team} scored {match_facts["coachedGoals"]} goals. Treat goal scoring, finishing and attacking penetration as major strengths. Do NOT recommend finishing practice, goal-scoring drills, shot conversion, or improving goal threat as a main focus unless coach notes explicitly say chances were wasted.')
+        rules.append(f'For {coached_team}, focus on sustaining the attacking patterns that created goals, game management, rest defence, kickout control, and protecting against counterattacks rather than more scoring practice.')
+    elif match_facts['coachedGoals'] <= 1 and match_facts['coachedTeamResult'] != 'won':
+        rules.append(f'{coached_team} had limited goal output. It is valid to focus on penetration, high-value chance creation and earlier delivery into scoring zones.')
+
+    if match_facts['oppositionGoals'] >= 3:
+        rules.append(f'{coached_team} conceded {match_facts["oppositionGoals"]} goals. Prioritise defensive transition, protecting central goal channels, sweeper cover, and recovery shape.')
+    elif match_facts['oppositionGoals'] <= 1:
+        rules.append(f'{coached_team} conceded {match_facts["oppositionGoals"]} goals. Do not overstate defensive collapse; defensive work should be framed as refinement, not crisis.')
+
+    if match_facts['coachedTeamResult'] == 'won' and match_facts['margin'] >= 10:
+        rules.append(f'{coached_team} won comfortably. Main focus areas should be about sustaining strengths and tightening risk areas, not implying the performance was poor.')
+
+    if match_facts['coachedTeamResult'] == 'lost' and match_facts['margin'] <= 3:
+        rules.append(f'{coached_team} lost narrowly. Focus on small swing factors: one goal chance, one kickout spell, one transition concession, or late-game decision-making.')
+
+    return '\n'.join(f'- {rule}' for rule in rules) or '- Apply normal Gaelic football scoreline reasoning.'
 
 
 @app.post('/analyse-video')
@@ -97,6 +134,7 @@ def analyse_video(request: AnalyseRequest):
     match_facts = build_match_facts(match_context)
     coached_team = match_facts['coachedTeam']
     opposition_team = match_facts['teamB'] if match_facts['teamA'] == coached_team else match_facts['teamA']
+    scoreline_rules = build_scoreline_rules(match_facts)
 
     prompt = f'''
 You are an elite Gaelic football performance analyst working directly for {coached_team}.
@@ -109,6 +147,9 @@ The report must compare the two teams, identify the match-deciding factor, and g
 
 MATCH FACTS:
 {match_facts}
+
+SCORELINE-AWARE COACHING RULES:
+{scoreline_rules}
 
 VIDEO METADATA:
 {metadata}
@@ -128,6 +169,7 @@ STRICT RULES:
 - Focus primarily on {coached_team}: their strengths, weaknesses, tactical issues and coaching opportunities.
 - The opposition analysis should only exist to explain what hurt or exposed {coached_team}.
 - Main Focus Areas must be practical, tactical and directly useful for {coached_team} training sessions.
+- Do not recommend improving something that was obviously a major strength from the scoreline.
 - The Key Manager Takeaway must sound like the manager of {coached_team} speaking internally to players.
 - No generic filler such as “communication”, “spatial awareness”, “dynamic movement”, “cohesion”, “target awareness”, “sharpen transitions”, or “maintain structure”.
 - No confidence notes.
@@ -136,17 +178,17 @@ STRICT RULES:
 
 Return this exact markdown structure and nothing else:
 
-# Match Snapshot
+# {coached_team} – Match Snapshot
 | Item | Detail |
 |---|---|
 | Scoreline | {match_facts['scoreline']} |
 | Result | {coached_team} {match_facts['coachedTeamResult']} by {match_facts['margin']} point(s) |
 | Core Story | One direct tactical sentence explaining why the game went this way from the perspective of {coached_team}. |
 
-# Match-Deciding Factor
+# {coached_team} – Match-Deciding Factor
 One blunt paragraph, maximum 45 words. Explain the one factor that most shaped the result for {coached_team}.
 
-# Tactical Comparison
+# {coached_team} – Tactical Comparison
 | Area | {coached_team} | {opposition_team} |
 |---|---|---|
 | Possession | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
@@ -160,21 +202,21 @@ One blunt paragraph, maximum 45 words. Explain the one factor that most shaped t
 | Breaking Ball | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
 | Defensive Shape | descriptive label + ✅/⚠️/❌ | descriptive label + ✅/⚠️/❌ |
 
-# Main Focus Areas Going Forward
+# {coached_team} – Main Focus Areas Going Forward
 | Priority | Why It Matters For {coached_team} | Coaching Action |
 |---|---|---|
 | Specific focus area 1 | Match-specific reason linked to the game | Practical training action for {coached_team} |
 | Specific focus area 2 | Match-specific reason linked to the game | Practical training action for {coached_team} |
 | Specific focus area 3 | Match-specific reason linked to the game | Practical training action for {coached_team} |
 
-# Key Manager Takeaway
+# {coached_team} – Key Manager Takeaway
 One short quote, maximum 55 words. Make it direct, honest and tactical. It should sound like the manager of {coached_team} speaking to players after video review.
 '''
 
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
-            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports focused on helping the coached team improve through tactical insights and actionable coaching priorities.'},
+            {'role': 'system', 'content': 'You produce concise Gaelic games manager debrief reports focused on helping the coached team improve through scoreline-aware tactical insights and actionable coaching priorities.'},
             {'role': 'user', 'content': prompt}
         ]
     )
