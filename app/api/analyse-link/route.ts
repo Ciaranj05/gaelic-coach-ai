@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { randomUUID } from 'crypto'
 
 type MatchContext = {
   teamA?: string
@@ -21,6 +22,7 @@ type AnalyseRequest = {
 }
 
 type CoachingReport = {
+  reportId: string
   sourceUrl: string
   status: string
   mode: 'ai' | 'demo' | 'worker'
@@ -31,6 +33,7 @@ type CoachingReport = {
   timeline: { minute: string; note: string }[]
   nextSteps: string[]
   rawAnalysis?: string
+  debug?: Record<string, unknown>
 }
 
 function isSupportedUrl(url: string) {
@@ -48,8 +51,9 @@ function formatScore(context?: MatchContext) {
   return `${context.teamA} ${aGoals}-${aPoints} (${aGoals * 3 + aPoints}) vs ${context.teamB} ${bGoals}-${bPoints} (${bGoals * 3 + bPoints})`
 }
 
-function buildDemoReport(url: string, matchContext?: MatchContext): CoachingReport {
+function buildDemoReport(url: string, matchContext?: MatchContext, reportId = randomUUID()): CoachingReport {
   return {
+    reportId,
     sourceUrl: url,
     status: 'complete',
     mode: 'demo',
@@ -70,7 +74,13 @@ function buildDemoReport(url: string, matchContext?: MatchContext): CoachingRepo
       'Check WORKER_API_URL is set in Vercel.',
       'Check the Railway worker is online.',
       'Redeploy Vercel after setting environment variables.'
-    ]
+    ],
+    debug: {
+      reportId,
+      mode: 'demo',
+      workerReached: false,
+      createdAt: new Date().toISOString()
+    }
   }
 }
 
@@ -126,7 +136,6 @@ function sanitizeAnalysisMarkdown(markdown: string, matchContext?: MatchContext)
 
   let output = cleaned.join('\n')
 
-  // Remove empty table-only sections that can appear after weak rows are stripped.
   output = output.replace(/# .*?(Evidence Summary|Key Moments Timeline|Tactical Sequences Worth Reviewing)[\s\S]*?\|---.*?\|\s*(?=\n# )/g, (section) => {
     const dataRows = section
       .split('\n')
@@ -144,7 +153,7 @@ function sanitizeAnalysisMarkdown(markdown: string, matchContext?: MatchContext)
   return output
 }
 
-async function callRailwayWorker(url: string, notes: string, matchContext?: MatchContext): Promise<CoachingReport | null> {
+async function callRailwayWorker(url: string, notes: string, matchContext: MatchContext | undefined, reportId: string): Promise<CoachingReport | null> {
   const workerUrl = process.env.WORKER_API_URL?.replace(/\/$/, '')
 
   if (!workerUrl) {
@@ -154,7 +163,7 @@ async function callRailwayWorker(url: string, notes: string, matchContext?: Matc
   const response = await fetch(`${workerUrl}/analyse-video`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, notes, matchContext }),
+    body: JSON.stringify({ url, notes, matchContext, reportId }),
     cache: 'no-store'
   })
 
@@ -167,6 +176,7 @@ async function callRailwayWorker(url: string, notes: string, matchContext?: Matc
   const bullets = splitAnalysisIntoBullets(analysis)
 
   return {
+    reportId,
     sourceUrl: url,
     status: 'complete',
     mode: 'worker',
@@ -180,12 +190,27 @@ async function callRailwayWorker(url: string, notes: string, matchContext?: Matc
     ],
     timeline: [],
     nextSteps: ['Use the full report to select three training-ground priorities for the next session.'],
-    rawAnalysis: analysis
+    rawAnalysis: analysis,
+    debug: {
+      reportId,
+      mode: 'worker',
+      workerReached: true,
+      processingProfile: data.processingProfile,
+      eventsAnalysed: data.matchEvidence?.eventsAnalysed,
+      surfacedEvents: data.matchEvidence?.surfacedEvents,
+      highValueEvents: data.matchEvidence?.highValueEvents,
+      sequenceCount: data.matchEvidence?.sequenceCount,
+      clipsAvailable: data.matchEvidence?.clipsAvailable,
+      cvEnabledEvents: data.matchEvidence?.cvEnabledEvents,
+      gaelicStatEngine: data.matchEvidence?.gaelicStatEngine,
+      createdAt: new Date().toISOString()
+    }
   }
 }
 
 async function generateAiReport(url: string, notes: string, matchContext?: MatchContext): Promise<CoachingReport> {
-  const workerReport = await callRailwayWorker(url, notes, matchContext)
+  const reportId = randomUUID()
+  const workerReport = await callRailwayWorker(url, notes, matchContext, reportId)
 
   if (workerReport) {
     return workerReport
@@ -194,7 +219,7 @@ async function generateAiReport(url: string, notes: string, matchContext?: Match
   const apiKey = process.env.OPENAI_API_KEY
 
   if (!apiKey || !notes.trim()) {
-    return buildDemoReport(url, matchContext)
+    return buildDemoReport(url, matchContext, reportId)
   }
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -220,19 +245,20 @@ async function generateAiReport(url: string, notes: string, matchContext?: Match
   })
 
   if (!response.ok) {
-    return buildDemoReport(url, matchContext)
+    return buildDemoReport(url, matchContext, reportId)
   }
 
   const data = await response.json()
   const content = data.choices?.[0]?.message?.content
 
   if (!content) {
-    return buildDemoReport(url, matchContext)
+    return buildDemoReport(url, matchContext, reportId)
   }
 
   const parsed = JSON.parse(content)
 
   return {
+    reportId,
     sourceUrl: url,
     status: 'complete',
     mode: 'ai',
@@ -241,7 +267,13 @@ async function generateAiReport(url: string, notes: string, matchContext?: Match
     keyInsights: Array.isArray(parsed.keyInsights) ? parsed.keyInsights : [],
     trainingFocus: Array.isArray(parsed.trainingFocus) ? parsed.trainingFocus : [],
     timeline: Array.isArray(parsed.timeline) ? parsed.timeline : [],
-    nextSteps: Array.isArray(parsed.nextSteps) ? parsed.nextSteps : []
+    nextSteps: Array.isArray(parsed.nextSteps) ? parsed.nextSteps : [],
+    debug: {
+      reportId,
+      mode: 'ai',
+      workerReached: false,
+      createdAt: new Date().toISOString()
+    }
   }
 }
 
