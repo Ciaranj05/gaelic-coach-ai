@@ -55,7 +55,6 @@ def cv_shape_label(cv_result):
 
 
 def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=None, facts=None):
-    # Keep the original non-CV path when the OpenAI client is not present.
     if not client:
         return ORIGINAL_BUILD_EVENT_CANDIDATES(url, metadata, profile, client, job_id, facts)
 
@@ -137,7 +136,9 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
     evidence = ORIGINAL_AGGREGATE_EVIDENCE(events, facts, sequences, possession, zones, momentum)
     cv_enabled_events = []
     total_players = 0
-    shape_votes = {}
+    width_votes = {}
+    compactness_votes = {}
+    overload_votes = {}
     colour_counts = {}
 
     for event in events:
@@ -150,10 +151,15 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
         total_players += int(cv_result.get('playersDetected') or 0)
 
         shape = cv_result.get('shape') or {}
-        for key in ['width', 'compactness', 'overloadCue']:
-            value = shape.get(key, 'unknown')
-            if value and value != 'unknown':
-                shape_votes[value] = shape_votes.get(value, 0) + 1
+        width = shape.get('width', 'unknown')
+        compactness = shape.get('compactness', 'unknown')
+        overload = shape.get('overloadCue', 'unknown')
+        if width and width != 'unknown':
+            width_votes[width] = width_votes.get(width, 0) + 1
+        if compactness and compactness != 'unknown':
+            compactness_votes[compactness] = compactness_votes.get(compactness, 0) + 1
+        if overload and overload != 'unknown':
+            overload_votes[overload] = overload_votes.get(overload, 0) + 1
 
         for colour, count in (cv_result.get('teamColourCounts') or {}).items():
             colour_counts[colour] = colour_counts.get(colour, 0) + int(count)
@@ -163,7 +169,9 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
 
     evidence['cvEnabledEvents'] = len(cv_enabled_events)
     evidence['cvPlayersDetected'] = total_players
-    evidence['cvTopShapeCue'] = top_vote(shape_votes)
+    evidence['cvWidthCue'] = top_vote(width_votes)
+    evidence['cvCompactnessCue'] = top_vote(compactness_votes)
+    evidence['cvOverloadCue'] = top_vote(overload_votes)
     evidence['cvTeamColourCounts'] = dict(sorted(colour_counts.items(), key=lambda item: item[1], reverse=True))
 
     if cv_enabled_events:
@@ -206,12 +214,21 @@ def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, eve
     return base_prompt + f'''
 
 YOLO CV PLAYER/SHAPE EVIDENCE: {cv_events}
-YOLO CV AGGREGATE COUNTERS: {{'cvEnabledEvents': {match_evidence.get('cvEnabledEvents', 0)}, 'cvPlayersDetected': {match_evidence.get('cvPlayersDetected', 0)}, 'cvTopShapeCue': '{match_evidence.get('cvTopShapeCue', 'unknown')}', 'cvTeamColourCounts': {match_evidence.get('cvTeamColourCounts', {})}}}
+YOLO CV AGGREGATE COUNTERS: {{'cvEnabledEvents': {match_evidence.get('cvEnabledEvents', 0)}, 'cvPlayersDetected': {match_evidence.get('cvPlayersDetected', 0)}, 'cvWidthCue': '{match_evidence.get('cvWidthCue', 'unknown')}', 'cvCompactnessCue': '{match_evidence.get('cvCompactnessCue', 'unknown')}', 'cvOverloadCue': '{match_evidence.get('cvOverloadCue', 'unknown')}', 'cvTeamColourCounts': {match_evidence.get('cvTeamColourCounts', {})}}}
 Additional CV rules:
-- If YOLO CV evidence is enabled, use it to support shape language: compact, stretched, wide, narrow, central overload, left-channel overload, right-channel overload.
-- Do not say YOLO proves possession or score outcomes. Use it only for player counts, team-colour grouping, width, compactness and overload cues.
-- Prefer phrases such as "CV shape cue suggests" or "player-detection evidence showed" rather than absolute claims.
-- Add one CV-informed observation where useful in Evidence Summary, Tactical Sequences or Estimated Key Match Stats.
+- Add this exact section after Evidence Summary if cvEnabledEvents is greater than 0:
+# {coached} – YOLO Detected Shape Stats
+| Gaelic Stat | Detected Evidence | Coaching Relevance |
+|---|---|---|
+| Player Detection Windows | cvEnabledEvents + cvPlayersDetected player instances | Indicates how much CV evidence was available |
+| Team Colour Grouping | cvTeamColourCounts | Useful for validating kit separation and team mapping |
+| Width Cue | cvWidthCue | Relates to attacking width, defensive spread and kick-pass outlets |
+| Compactness Cue | cvCompactnessCue | Relates to defensive shape, middle-third congestion and rest defence |
+| Overload Channel Cue | cvOverloadCue | Relates to left/right/central channel overloads and where support runners appeared |
+- Use only Gaelic-relevant stat labels. Do not use generic computer-vision language as the headline.
+- Do not say YOLO proves possession, scores, turnovers or kickout winners. It only supports player count, colour grouping, width, compactness and overload cues.
+- If a CV value is unknown, omit that row rather than writing unknown.
+- Prefer concise table stats over commentary.
 '''
 
 
