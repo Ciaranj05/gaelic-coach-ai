@@ -82,6 +82,68 @@ function splitAnalysisIntoBullets(text: string) {
     .slice(0, 8)
 }
 
+function weakEvidenceRow(line: string) {
+  const lower = line.toLowerCase()
+
+  if (!line.trim().startsWith('|')) return false
+  if (lower.includes('|---')) return false
+  if (lower.includes('metric') || lower.includes('evidence area') || lower.includes('time') || lower.includes('priority')) return false
+
+  const weakPatterns = [
+    'unknown',
+    'unclear',
+    'not assessed',
+    'unassessed',
+    'no clear',
+    'no defined',
+    'no clips',
+    'video evidence unavailable',
+    '0 transitions',
+    '0 transition',
+    '0 turnovers',
+    'no turnovers recorded',
+    'kickouts were not assessed',
+    'kickout outcome unclear',
+    'possession ownership remains mixed',
+    'evidence mainly unknown'
+  ]
+
+  return weakPatterns.some((pattern) => lower.includes(pattern))
+}
+
+function sanitizeAnalysisMarkdown(markdown: string, matchContext?: MatchContext) {
+  const lines = markdown.split('\n')
+  const cleaned: string[] = []
+  let removedWeakRows = 0
+
+  for (const line of lines) {
+    if (weakEvidenceRow(line)) {
+      removedWeakRows += 1
+      continue
+    }
+    cleaned.push(line)
+  }
+
+  let output = cleaned.join('\n')
+
+  // Remove empty table-only sections that can appear after weak rows are stripped.
+  output = output.replace(/# .*?(Evidence Summary|Key Moments Timeline|Tactical Sequences Worth Reviewing)[\s\S]*?\|---.*?\|\s*(?=\n# )/g, (section) => {
+    const dataRows = section
+      .split('\n')
+      .filter((row) => row.trim().startsWith('|') && !row.includes('---'))
+      .slice(1)
+    return dataRows.length ? section : ''
+  })
+
+  if (removedWeakRows > 0) {
+    const coached = matchContext?.coachedTeam ?? 'the coached team'
+    const fallback = `\n# ${coached} – Evidence Quality Note\nThe video evidence did not support every tactical category with enough confidence, so weak rows such as unknown kickouts, unclear possession and zero-transition claims were removed. The report below focuses on the scoreline, stronger observed moments and coach-confirmed context.\n`
+    output = output.replace(/(# .*?– Match-Deciding Factor)/, `${fallback}\n$1`)
+  }
+
+  return output
+}
+
 async function callRailwayWorker(url: string, notes: string, matchContext?: MatchContext): Promise<CoachingReport | null> {
   const workerUrl = process.env.WORKER_API_URL?.replace(/\/$/, '')
 
@@ -101,7 +163,7 @@ async function callRailwayWorker(url: string, notes: string, matchContext?: Matc
   }
 
   const data = await response.json()
-  const analysis = String(data.analysis ?? '')
+  const analysis = sanitizeAnalysisMarkdown(String(data.analysis ?? ''), matchContext)
   const bullets = splitAnalysisIntoBullets(analysis)
 
   return {
@@ -112,9 +174,9 @@ async function callRailwayWorker(url: string, notes: string, matchContext?: Matc
     scoreline: formatScore(matchContext),
     keyInsights: bullets.slice(0, 4),
     trainingFocus: bullets.slice(4, 8).length ? bullets.slice(4, 8) : [
-      `Review ${matchContext?.coachedTeam ?? 'the coached team'} kickout strategy and retention under pressure.`,
-      `Work on ${matchContext?.coachedTeam ?? 'the coached team'} transition defence after turnovers.`,
-      'Improve decision-making and shot selection in scoring zones.'
+      `Review ${matchContext?.coachedTeam ?? 'the coached team'} attacking patterns that created the strongest scoring return.`,
+      `Protect defensive shape after attacks, especially if the scoreline shows a strong goal return.`,
+      'Use confirmed video moments only when selecting clip-review priorities.'
     ],
     timeline: [],
     nextSteps: ['Use the full report to select three training-ground priorities for the next session.'],
