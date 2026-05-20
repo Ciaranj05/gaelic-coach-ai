@@ -97,7 +97,22 @@ def estimate_gaelic_stats(events, match_evidence):
 
 
 def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=None, facts=None):
-    return ORIGINAL_BUILD_EVENT_CANDIDATES(url, metadata, profile, client, job_id, facts)
+    tactical_density_profile = {
+        **(profile or {}),
+        'candidateCount': max(int((profile or {}).get('candidateCount', 42)), 160),
+        'classifiedEventCount': max(int((profile or {}).get('classifiedEventCount', 26)), 80),
+        'minEventGapSeconds': min(int((profile or {}).get('minEventGapSeconds', 60)), 12),
+        'clipCount': max(int((profile or {}).get('clipCount', 8)), 20),
+    }
+
+    return ORIGINAL_BUILD_EVENT_CANDIDATES(
+        url,
+        metadata,
+        tactical_density_profile,
+        client,
+        job_id,
+        facts,
+    )
 
 
 def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, zones=None, momentum=None):
