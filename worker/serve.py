@@ -38,27 +38,6 @@ def dominant_colour(cv_result):
     return max(colours, key=colours.get)
 
 
-def estimate_control_phase(cv_result):
-    if not isinstance(cv_result, dict) or not cv_result.get('enabled'):
-        return 'unknown'
-
-    shape = cv_result.get('shape') or {}
-    overload = shape.get('overloadCue', 'unknown')
-    width = shape.get('width', 'unknown')
-    compactness = shape.get('compactness', 'unknown')
-
-    if overload in ['left_channel', 'right_channel'] and width == 'wide':
-        return 'attacking_control'
-
-    if compactness == 'compact' and width in ['narrow', 'medium']:
-        return 'defensive_control'
-
-    if overload == 'central_channel':
-        return 'middle_third_control'
-
-    return 'balanced_phase'
-
-
 def track_possession_and_turnovers(events):
     previous_colour = None
     possessions = {}
@@ -148,6 +127,36 @@ def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, eve
     )
 
     return base_prompt + f'''
+
+MANAGER MATCH STATS PRIORITY ORDER:
+1. Score efficiency
+2. Kickout battle
+3. Turnovers
+4. Possession / territory
+5. Transition attacks
+6. Defensive compactness
+7. Breaking ball
+8. Shape / overloads
+
+MANAGER MATCH STATS SECTION RULES:
+- Always include a section titled: # {coached} – Manager Match Stats
+- Present stats in a fixed table ordered by coaching importance.
+- Use Confirmed / Estimated / Low confidence labels.
+- Keep stats concise and readable.
+- Avoid generic commentary in this section.
+- Prefer statistics and evidence cues over narrative.
+
+Required table format:
+| Manager Stat | Output | Confidence |
+|---|---|---|
+| Score Efficiency | goals/points/score margin summary | Confirmed |
+| Kickout Battle | estimated kickouts tracked + retention | trackerConfidence |
+| Turnovers | estimated turnovers from continuity | trackerConfidence |
+| Possession / Territory | dominant possession colours | trackerConfidence |
+| Transition Attacks | transition observations if available | Estimated |
+| Defensive Compactness | cvCompactnessCue | Estimated |
+| Breaking Ball | breaking-ball observations if available | Estimated |
+| Shape / Overloads | cvWidthCue + cvOverloadCue | Estimated |
 
 POSSESSION & TURNOVER TRACKER V1: {stat_engine}
 Additional tracker rules:
