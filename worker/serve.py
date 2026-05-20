@@ -54,82 +54,88 @@ def cv_shape_label(cv_result):
     return f"{shape.get('width', 'unknown')} / {shape.get('compactness', 'unknown')} / {shape.get('overloadCue', 'unknown')}"
 
 
+def estimate_gaelic_stats(events, match_evidence):
+    score_events = 0
+    goal_events = 0
+    point_events = 0
+    wide_events = 0
+    kickout_events = 0
+    retained_kickouts = 0
+    turnovers_for = 0
+    turnovers_against = 0
+    transitions = 0
+    breaking_balls = 0
+    possession_votes = {}
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+
+        classification = event.get('classification') or {}
+        score_outcome = classification.get('scoreOutcome') or event.get('scoreOutcome')
+        kickout = classification.get('kickoutOutcome')
+        possession = event.get('likelyTeamInPossession') or classification.get('likelyTeamInPossession')
+        event_type = event.get('type')
+        transition = classification.get('transitionOutcome')
+        possession_outcome = classification.get('possessionOutcome')
+
+        if possession:
+            possession_votes[possession] = possession_votes.get(possession, 0) + 1
+
+        if score_outcome == 'goal':
+            goal_events += 1
+            score_events += 1
+        elif score_outcome == 'point':
+            point_events += 1
+            score_events += 1
+        elif score_outcome == 'wide':
+            wide_events += 1
+
+        if event_type == 'kickout_restart':
+            kickout_events += 1
+            if kickout in ['short_retained', 'won_clean', 'won_breaking_ball']:
+                retained_kickouts += 1
+
+        if possession_outcome == 'turnover_for':
+            turnovers_for += 1
+        elif possession_outcome == 'turnover_against':
+            turnovers_against += 1
+
+        if transition in ['created_score', 'created_chance', 'carried_to_scoring_zone']:
+            transitions += 1
+
+        if event_type == 'breaking_ball':
+            breaking_balls += 1
+
+    total_possession_votes = sum(possession_votes.values())
+    top_possession = max(possession_votes, key=possession_votes.get) if possession_votes else 'unknown'
+    top_share = int((possession_votes.get(top_possession, 0) / max(1, total_possession_votes)) * 100) if possession_votes else 0
+
+    confidence = 'high' if len(events) >= 10 else 'medium' if len(events) >= 5 else 'low'
+
+    return {
+        'estimatedScoresDetected': score_events,
+        'estimatedGoalsDetected': goal_events,
+        'estimatedPointsDetected': point_events,
+        'estimatedWidesDetected': wide_events,
+        'estimatedKickoutsTracked': kickout_events,
+        'estimatedKickoutRetention': f'{int((retained_kickouts / max(1, kickout_events)) * 100)}%' if kickout_events else 'insufficient evidence',
+        'estimatedTurnoversWon': turnovers_for,
+        'estimatedTurnoversLost': turnovers_against,
+        'estimatedPositiveTransitions': transitions,
+        'estimatedBreakingBallEvents': breaking_balls,
+        'estimatedPossessionLeader': top_possession,
+        'estimatedPossessionShare': f'{top_share}% estimated event control' if top_possession != 'unknown' else 'unclear',
+        'confidence': confidence,
+        'cvEnabledEvents': match_evidence.get('cvEnabledEvents', 0),
+        'cvWidthCue': match_evidence.get('cvWidthCue', 'unknown'),
+        'cvCompactnessCue': match_evidence.get('cvCompactnessCue', 'unknown'),
+        'cvOverloadCue': match_evidence.get('cvOverloadCue', 'unknown'),
+    }
+
+
 def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=None, facts=None):
-    if not client:
-        return ORIGINAL_BUILD_EVENT_CANDIDATES(url, metadata, profile, client, job_id, facts)
-
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            main.set_job_stage(job_id, 'download', 'Downloading match video for full-match scan')
-            video_path = main.download_match_video(url, tmpdir, profile)
-            if not video_path:
-                return main.fallback_event_candidates(metadata)
-
-            main.set_job_stage(job_id, 'full_match_scan', 'Extracting low-res scan frames and comparing movement changes')
-            differences = main.scan_video_frame_differences(video_path, profile)
-
-            main.set_job_stage(job_id, 'event_selection', 'Selecting dense tactical review windows')
-            candidates = main.select_event_candidates_from_differences(
-                differences,
-                int(profile.get('candidateCount', 36)),
-                int(profile.get('minEventGapSeconds', 60))
-            ) or main.fallback_event_candidates(metadata)
-
-            main.set_job_stage(job_id, 'event_analysis', 'Classifying windows and adding YOLO player/shape cues')
-            enriched = []
-            classified_count = int(profile.get('classifiedEventCount', 24))
-            clip_count = int(profile.get('clipCount', 8))
-            first_frames = []
-            facts = facts or main.build_match_facts({})
-            cached_colours = None
-
-            for index, event in enumerate(candidates[:classified_count], start=1):
-                frames = main.extract_event_frames(video_path, event, tmpdir, index, profile)
-                if frames and len(first_frames) < 10:
-                    first_frames += frames[:2]
-
-                if not cached_colours or cached_colours.get('confidence') == 'low':
-                    cached_colours = main.detect_team_colours(client, first_frames or frames, facts)
-
-                scoreboard_ocr = main.read_scoreboard_ocr(
-                    client,
-                    main.extract_scoreboard_crops(video_path, event, tmpdir, index)
-                )
-                classification = main.classify_event_frames(client, frames, event, scoreboard_ocr, cached_colours, facts)
-
-                if not classification.get('keepForReport') and classification.get('coachingValue') == 'low':
-                    continue
-
-                event_type = classification.get('eventType', event.get('type'))
-                clip = main.extract_event_clip(video_path, {**event, 'type': event_type}, job_id, index) if index <= clip_count else None
-                cv_result = run_cv_on_event(video_path, event.get('startSecond', 0), event.get('endSecond', event.get('startSecond', 0) + 30))
-                cv_note = cv_summary_sentence(cv_result)
-
-                visual_summary = classification.get('visualSummary', '')
-                if cv_note:
-                    visual_summary = f'{visual_summary} {cv_note}'.strip()
-
-                enriched.append({
-                    **event,
-                    'type': event_type,
-                    'classification': classification,
-                    'visualAnalysis': visual_summary,
-                    'scoreboard': classification.get('scoreboard'),
-                    'scoreOutcome': classification.get('scoreOutcome'),
-                    'teamColours': classification.get('teamColours'),
-                    'matchIntelligence': classification.get('matchIntelligence'),
-                    'possessionColour': classification.get('possessionColour'),
-                    'likelyTeamInPossession': classification.get('likelyTeamInPossession'),
-                    'framesAnalysed': len(frames),
-                    'clip': clip,
-                    'cvPlayerDetection': cv_result,
-                    'cvShapeCue': cv_shape_label(cv_result),
-                    'cvSummary': cv_note,
-                })
-
-            return enriched + candidates[classified_count:]
-    except Exception:
-        return main.fallback_event_candidates(metadata)
+    return ORIGINAL_BUILD_EVENT_CANDIDATES(url, metadata, profile, client, job_id, facts)
 
 
 def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, zones=None, momentum=None):
@@ -173,6 +179,7 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
     evidence['cvCompactnessCue'] = top_vote(compactness_votes)
     evidence['cvOverloadCue'] = top_vote(overload_votes)
     evidence['cvTeamColourCounts'] = dict(sorted(colour_counts.items(), key=lambda item: item[1], reverse=True))
+    evidence['gaelicStatEngine'] = estimate_gaelic_stats(events, evidence)
 
     if cv_enabled_events:
         evidence['evidenceBullets'].append(
@@ -183,16 +190,7 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
 
 
 def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, events, timeline, sequences, possession_continuity, field_zones, momentum_phases, match_evidence, notes, profile):
-    cv_events = [
-        {
-            'time': event.get('time'),
-            'type': event.get('type'),
-            'cvShapeCue': event.get('cvShapeCue'),
-            'cvSummary': event.get('cvSummary'),
-        }
-        for event in events
-        if isinstance(event, dict) and event.get('cvSummary')
-    ][:10]
+    stat_engine = match_evidence.get('gaelicStatEngine', {})
 
     base_prompt = ORIGINAL_BUILD_REPORT_PROMPT(
         coached,
@@ -213,22 +211,29 @@ def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, eve
 
     return base_prompt + f'''
 
-YOLO CV PLAYER/SHAPE EVIDENCE: {cv_events}
-YOLO CV AGGREGATE COUNTERS: {{'cvEnabledEvents': {match_evidence.get('cvEnabledEvents', 0)}, 'cvPlayersDetected': {match_evidence.get('cvPlayersDetected', 0)}, 'cvWidthCue': '{match_evidence.get('cvWidthCue', 'unknown')}', 'cvCompactnessCue': '{match_evidence.get('cvCompactnessCue', 'unknown')}', 'cvOverloadCue': '{match_evidence.get('cvOverloadCue', 'unknown')}', 'cvTeamColourCounts': {match_evidence.get('cvTeamColourCounts', {})}}}
-Additional CV rules:
-- Add this exact section after Evidence Summary if cvEnabledEvents is greater than 0:
-# {coached} – YOLO Detected Shape Stats
-| Gaelic Stat | Detected Evidence | Coaching Relevance |
+GAELIC STAT ENGINE V1: {stat_engine}
+Additional reporting rules:
+- Add this exact section after Evidence Summary if Gaelic Stat Engine data exists:
+# {coached} – Estimated Gaelic Match Stats
+| Gaelic Stat | Estimated Output | Confidence |
 |---|---|---|
-| Player Detection Windows | cvEnabledEvents + cvPlayersDetected player instances | Indicates how much CV evidence was available |
-| Team Colour Grouping | cvTeamColourCounts | Useful for validating kit separation and team mapping |
-| Width Cue | cvWidthCue | Relates to attacking width, defensive spread and kick-pass outlets |
-| Compactness Cue | cvCompactnessCue | Relates to defensive shape, middle-third congestion and rest defence |
-| Overload Channel Cue | cvOverloadCue | Relates to left/right/central channel overloads and where support runners appeared |
-- Use only Gaelic-relevant stat labels. Do not use generic computer-vision language as the headline.
-- Do not say YOLO proves possession, scores, turnovers or kickout winners. It only supports player count, colour grouping, width, compactness and overload cues.
-- If a CV value is unknown, omit that row rather than writing unknown.
-- Prefer concise table stats over commentary.
+| Scores Detected | estimatedScoresDetected | confidence |
+| Goals Detected | estimatedGoalsDetected | confidence |
+| Points Detected | estimatedPointsDetected | confidence |
+| Wides Detected | estimatedWidesDetected | confidence |
+| Kickouts Tracked | estimatedKickoutsTracked | confidence |
+| Kickout Retention | estimatedKickoutRetention | confidence |
+| Turnovers Won | estimatedTurnoversWon | confidence |
+| Turnovers Lost | estimatedTurnoversLost | confidence |
+| Positive Transitions | estimatedPositiveTransitions | confidence |
+| Breaking Ball Events | estimatedBreakingBallEvents | confidence |
+| Estimated Possession Leader | estimatedPossessionLeader + estimatedPossessionShare | confidence |
+| Width Cue | cvWidthCue | confidence |
+| Compactness Cue | cvCompactnessCue | confidence |
+| Overload Channel Cue | cvOverloadCue | confidence |
+- Clearly label all outputs as estimated unless confirmed by scoreboard OCR or manual match context.
+- Omit rows where evidence is too weak.
+- Prefer concise statistical presentation over generic tactical commentary.
 '''
 
 
