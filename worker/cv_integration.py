@@ -13,13 +13,28 @@ except Exception:
 try:
     from possession_tracker import infer_possession_sequences
 except Exception:
-    def infer_possession_sequences(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def infer_possession_sequences(events: List[Dict[str, Any]], facts=None) -> Dict[str, Any]:
         return {
             'dominantTeamColour': 'unknown',
             'possessionPercentages': {},
             'estimatedTurnovers': 0,
-            'longestPossessionChain': 0,
-            'transitionMoments': [],
+            'longestPossessionChain': {},
+            'turnoverMoments': [],
+            'chains': [],
+            'confidence': 'low'
+        }
+
+try:
+    from transition_engine import analyse_transition_patterns
+except Exception:
+    def analyse_transition_patterns(chains: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            'successfulTransitions': 0,
+            'failedTransitions': 0,
+            'controlledPossessionPhases': 0,
+            'structuredResets': 0,
+            'transitionOutcomes': [],
+            'mainCoachingTheme': 'Transition engine unavailable.',
             'confidence': 'low'
         }
 
@@ -27,7 +42,7 @@ except Exception:
 def cv_status() -> Dict[str, Any]:
     return {
         "enabled": yolo_available(),
-        "phase": "player_detection_team_colour_shape_possession_tracking",
+        "phase": "player_detection_team_colour_shape_possession_tracking_transition_intelligence",
         "features": [
             "player_detection",
             "team_colour_grouping",
@@ -37,6 +52,7 @@ def cv_status() -> Dict[str, Any]:
             "persistent_team_tracking",
             "possession_inference",
             "transition_detection",
+            "transition_outcome_scoring",
             "turnover_estimation",
         ],
     }
@@ -61,5 +77,18 @@ def attach_cv_summary(event: Dict[str, Any], video_path: str) -> Dict[str, Any]:
     return event
 
 
-def build_match_possession_summary(events: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return infer_possession_sequences(events)
+def build_match_possession_summary(events: List[Dict[str, Any]], facts=None) -> Dict[str, Any]:
+    possession = infer_possession_sequences(events, facts)
+    transitions = analyse_transition_patterns(possession.get('chains', []))
+
+    return {
+        'possession': possession,
+        'transitions': transitions,
+        'summary': {
+            'dominantOwner': possession.get('dominantOwner'),
+            'estimatedTurnovers': possession.get('estimatedTurnovers'),
+            'successfulTransitions': transitions.get('successfulTransitions'),
+            'failedTransitions': transitions.get('failedTransitions'),
+            'mainTransitionTheme': transitions.get('mainCoachingTheme'),
+        }
+    }
