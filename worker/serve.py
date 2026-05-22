@@ -1,5 +1,6 @@
 import tempfile
 import uuid
+from datetime import datetime
 
 import main
 from main import app, HTTPException
@@ -44,6 +45,19 @@ VIDEO_INGESTION_STATUS = {
 }
 LAST_DOWNLOAD_DEBUG = {}
 LAST_SCAN_DEBUG = {}
+PROCESS_LOG = []
+
+
+def log_step(stage, detail=None):
+    entry = {
+        'time': datetime.utcnow().isoformat(),
+        'stage': stage,
+        'detail': detail or ''
+    }
+    PROCESS_LOG.append(entry)
+    if len(PROCESS_LOG) > 80:
+        del PROCESS_LOG[:-80]
+    print(f"[GAELIC_AI] {stage}: {detail or ''}", flush=True)
 
 
 @app.get('/cv-status')
@@ -69,6 +83,7 @@ def get_debug_report(report_id: str):
 
 def download_match_video_with_debug(url, tmpdir, profile):
     global LAST_DOWNLOAD_DEBUG
+    log_step('download_start', {'url': url, 'tmpdir': tmpdir, 'format': (profile or {}).get('videoFormat')})
     LAST_DOWNLOAD_DEBUG = {
         'attempted': True,
         'ok': False,
@@ -80,6 +95,7 @@ def download_match_video_with_debug(url, tmpdir, profile):
 
     if not robust_download_match_video:
         LAST_DOWNLOAD_DEBUG['error'] = 'robust_download_match_video unavailable'
+        log_step('download_unavailable', LAST_DOWNLOAD_DEBUG)
         return None
 
     try:
@@ -97,14 +113,17 @@ def download_match_video_with_debug(url, tmpdir, profile):
         except Exception as exc:
             LAST_DOWNLOAD_DEBUG['debugReadError'] = str(exc)[:500]
 
+        log_step('download_complete' if path else 'download_failed', LAST_DOWNLOAD_DEBUG)
         return path
     except Exception as exc:
         LAST_DOWNLOAD_DEBUG['error'] = str(exc)[:1000]
+        log_step('download_exception', LAST_DOWNLOAD_DEBUG)
         return None
 
 
 def scan_video_frame_differences_with_debug(video_path, profile, max_scan_seconds=7200):
     global LAST_SCAN_DEBUG
+    log_step('scan_start', {'videoPath': video_path, 'interval': (profile or {}).get('scanIntervalSeconds'), 'maxScanSeconds': max_scan_seconds})
     LAST_SCAN_DEBUG = {
         'attempted': True,
         'ok': False,
@@ -117,9 +136,11 @@ def scan_video_frame_differences_with_debug(video_path, profile, max_scan_second
         differences = ORIGINAL_SCAN_VIDEO_FRAME_DIFFERENCES(video_path, profile, max_scan_seconds)
         LAST_SCAN_DEBUG['differenceCount'] = len(differences or [])
         LAST_SCAN_DEBUG['ok'] = bool(differences)
+        log_step('scan_complete', LAST_SCAN_DEBUG)
         return differences
     except Exception as exc:
         LAST_SCAN_DEBUG['error'] = str(exc)[:1000]
+        log_step('scan_exception', LAST_SCAN_DEBUG)
         return []
 
 
@@ -130,6 +151,7 @@ def dense_fallback_event_candidates(metadata):
 
     count = 160
     gap = max(12, duration // count)
+    log_step('dense_fallback_start', {'duration': duration, 'count': count, 'gap': gap})
     labels = [
         'kickout_restart',
         'slow_possession',
@@ -160,6 +182,7 @@ def dense_fallback_event_candidates(metadata):
         second += gap
         index += 1
 
+    log_step('dense_fallback_complete', {'events': len(events)})
     return events
 
 
@@ -242,7 +265,8 @@ def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=N
         enriched_metadata['duration'] = 4200
         enriched_metadata['durationSource'] = 'defaulted_70_minute_match_due_to_missing_metadata'
 
-    return ORIGINAL_BUILD_EVENT_CANDIDATES(
+    log_step('event_candidates_start', {'duration': enriched_metadata.get('duration'), 'profile': tactical_density_profile})
+    events = ORIGINAL_BUILD_EVENT_CANDIDATES(
         url,
         enriched_metadata,
         tactical_density_profile,
@@ -250,9 +274,12 @@ def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=N
         job_id,
         facts,
     )
+    log_step('event_candidates_complete', {'events': len(events or [])})
+    return events
 
 
 def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, zones=None, momentum=None):
+    log_step('aggregate_evidence_start', {'events': len(events or []), 'sequences': len(sequences or [])})
     evidence = ORIGINAL_AGGREGATE_EVIDENCE(events, facts, sequences, possession, zones, momentum)
     evidence['gaelicStatEngine'] = estimate_gaelic_stats(events, evidence)
     evidence['debugDensity'] = {
@@ -263,12 +290,15 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
         'fallbackEvents': len([event for event in events if isinstance(event, dict) and event.get('fallbackMode')]),
         'downloadDebug': LAST_DOWNLOAD_DEBUG,
         'scanDebug': LAST_SCAN_DEBUG,
+        'processLog': PROCESS_LOG[-40:],
         'note': 'If fallbackEvents is high, check downloadDebug and scanDebug to see whether video download or ffmpeg frame scanning failed.'
     }
+    log_step('aggregate_evidence_complete', {'eventsAnalysed': evidence.get('eventsAnalysed'), 'fallbackEvents': evidence['debugDensity']['fallbackEvents']})
     return evidence
 
 
 def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, events, timeline, sequences, possession_continuity, field_zones, momentum_phases, match_evidence, notes, profile):
+    log_step('report_prompt_start', {'events': len(events or []), 'sequences': len(sequences or [])})
     stat_engine = match_evidence.get('gaelicStatEngine', {})
 
     base_prompt = ORIGINAL_BUILD_REPORT_PROMPT(
@@ -287,6 +317,7 @@ def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, eve
         notes,
         profile,
     )
+    log_step('report_prompt_complete', {'promptLength': len(base_prompt or '')})
 
     return base_prompt + f'''
 
@@ -330,7 +361,10 @@ Additional tracker rules:
 
 def generate_analysis_with_debug(request, job_id=None):
     global LATEST_DEBUG_REPORT_ID
+    PROCESS_LOG.clear()
+    log_step('analysis_start', {'jobId': job_id, 'url': getattr(request, 'url', '')})
     result = ORIGINAL_GENERATE_ANALYSIS(request, job_id)
+    log_step('analysis_core_complete', {'status': result.get('status'), 'events': len(result.get('eventCandidates') or [])})
     report_id = getattr(request, 'reportId', None) or str(uuid.uuid4())
     result['reportId'] = report_id
     debug_payload = {
@@ -342,6 +376,7 @@ def generate_analysis_with_debug(request, job_id=None):
         'videoMetadataDebug': (result.get('videoMetadata') or {}).get('debug'),
         'downloadDebug': LAST_DOWNLOAD_DEBUG,
         'scanDebug': LAST_SCAN_DEBUG,
+        'processLog': PROCESS_LOG[-80:],
         'matchFacts': result.get('matchFacts'),
         'matchEvidence': result.get('matchEvidence'),
         'eventCandidateCount': len(result.get('eventCandidates') or []),
@@ -361,6 +396,7 @@ def generate_analysis_with_debug(request, job_id=None):
     result['debugReportUrl'] = f'/debug-report/{report_id}'
     result['latestDebugReportUrl'] = '/debug-report/latest'
     result['debug'] = debug_payload
+    log_step('analysis_debug_stored', {'reportId': report_id})
     return result
 
 
