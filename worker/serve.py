@@ -26,6 +26,7 @@ ORIGINAL_BUILD_EVENT_CANDIDATES = main.build_event_candidates
 ORIGINAL_AGGREGATE_EVIDENCE = main.aggregate_evidence
 ORIGINAL_BUILD_REPORT_PROMPT = main.build_report_prompt
 ORIGINAL_GENERATE_ANALYSIS = main.generate_analysis
+ORIGINAL_FALLBACK_EVENT_CANDIDATES = main.fallback_event_candidates
 DEBUG_REPORTS = {}
 LATEST_DEBUG_REPORT_ID = None
 
@@ -47,6 +48,46 @@ def get_debug_report(report_id: str):
     if report_id not in DEBUG_REPORTS:
         raise HTTPException(status_code=404, detail='Debug report not found. Generate a fresh report after this endpoint is deployed.')
     return DEBUG_REPORTS[report_id]
+
+
+def dense_fallback_event_candidates(metadata):
+    duration = int((metadata or {}).get('duration') or 0)
+    if duration <= 0:
+        duration = 4200
+
+    count = 160
+    gap = max(12, duration // count)
+    labels = [
+        'kickout_restart',
+        'slow_possession',
+        'fast_transition',
+        'scoring_chance',
+        'breaking_ball',
+        'defensive_setup',
+        'turnover',
+        'game_management'
+    ]
+
+    events = []
+    second = 60
+    index = 0
+    while second < duration - 60 and len(events) < count:
+        event_type = labels[index % len(labels)]
+        events.append({
+            'time': f'{main.format_timestamp(second)} approx',
+            'startSecond': max(0, second - 12),
+            'endSecond': second + 18,
+            'type': event_type,
+            'reason': 'Dense fallback tactical checkpoint selected because video metadata/download scanning was unavailable.',
+            'confidence': 'low',
+            'scoreOutcome': main.norm_score_outcome({}),
+            'matchIntelligence': main.norm_match_intel({}),
+            'fallbackMode': 'dense_duration_fallback',
+        })
+        second += gap
+        index += 1
+
+    return events
 
 
 def dominant_colour(cv_result):
@@ -123,9 +164,14 @@ def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=N
         'clipCount': max(int((profile or {}).get('clipCount', 8)), 20),
     }
 
+    enriched_metadata = {**(metadata or {})}
+    if int(enriched_metadata.get('duration') or 0) <= 0:
+        enriched_metadata['duration'] = 4200
+        enriched_metadata['durationSource'] = 'defaulted_70_minute_match_due_to_missing_metadata'
+
     return ORIGINAL_BUILD_EVENT_CANDIDATES(
         url,
-        metadata,
+        enriched_metadata,
         tactical_density_profile,
         client,
         job_id,
@@ -141,7 +187,8 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
         'targetCandidateWindows': 160,
         'targetClassifiedWindows': 80,
         'targetGapSeconds': 12,
-        'note': 'If eventsReturnedToEvidence is low, filtering inside build_event_candidates is still over-pruning.'
+        'fallbackEvents': len([event for event in events if isinstance(event, dict) and event.get('fallbackMode')]),
+        'note': 'If fallbackEvents is high, video download/frame scanning is still failing even though dense fallback prevents only-four-window reports.'
     }
     return evidence
 
@@ -238,6 +285,7 @@ def generate_analysis_with_debug(request, job_id=None):
     return result
 
 
+main.fallback_event_candidates = dense_fallback_event_candidates
 main.build_event_candidates = build_event_candidates_with_cv
 main.aggregate_evidence = aggregate_evidence_with_cv
 main.build_report_prompt = build_report_prompt_with_cv
