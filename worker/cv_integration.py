@@ -52,11 +52,22 @@ except Exception:
             'confidence': 'low'
         }
 
+try:
+    from clip_surface_engine import surface_priority_clips
+except Exception:
+    def surface_priority_clips(events, transitions, kickouts):
+        return {
+            'priorityClips': [],
+            'highPriorityCount': 0,
+            'surfacedClipCount': 0,
+            'topThemes': []
+        }
+
 
 def cv_status() -> Dict[str, Any]:
     return {
         "enabled": yolo_available(),
-        "phase": "player_detection_team_colour_shape_possession_tracking_transition_intelligence_kickout_analysis",
+        "phase": "player_detection_team_colour_shape_possession_tracking_transition_intelligence_kickout_analysis_clip_surfacing",
         "features": [
             "player_detection",
             "team_colour_grouping",
@@ -70,6 +81,8 @@ def cv_status() -> Dict[str, Any]:
             "kickout_ownership_detection",
             "kickout_retention_estimation",
             "turnover_estimation",
+            "automatic_clip_surfacing",
+            "priority_review_windows",
         ],
     }
 
@@ -97,11 +110,13 @@ def build_match_possession_summary(events: List[Dict[str, Any]], facts=None) -> 
     possession = infer_possession_sequences(events, facts)
     transitions = analyse_transition_patterns(possession.get('chains', []))
     kickouts = analyse_kickout_patterns(possession.get('chains', []))
+    clips = surface_priority_clips(events, transitions, kickouts)
 
     return {
         'possession': possession,
         'transitions': transitions,
         'kickouts': kickouts,
+        'clips': clips,
         'summary': {
             'dominantOwner': possession.get('dominantOwner'),
             'estimatedTurnovers': possession.get('estimatedTurnovers'),
@@ -109,6 +124,8 @@ def build_match_possession_summary(events: List[Dict[str, Any]], facts=None) -> 
             'failedTransitions': transitions.get('failedTransitions'),
             'kickoutsIdentified': kickouts.get('kickoutsIdentified'),
             'kickoutRetentionRate': kickouts.get('retentionRate'),
+            'surfacedClipCount': clips.get('surfacedClipCount'),
+            'highPriorityClipCount': clips.get('highPriorityCount'),
             'mainTransitionTheme': transitions.get('mainCoachingTheme'),
             'mainKickoutTheme': kickouts.get('mainCoachingTheme'),
         }
