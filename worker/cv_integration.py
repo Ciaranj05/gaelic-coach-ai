@@ -38,11 +38,25 @@ except Exception:
             'confidence': 'low'
         }
 
+try:
+    from kickout_engine import analyse_kickout_patterns
+except Exception:
+    def analyse_kickout_patterns(chains: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            'kickoutsIdentified': 0,
+            'retained': 0,
+            'lost': 0,
+            'retentionRate': 'Unknown',
+            'kickoutOutcomes': [],
+            'mainCoachingTheme': 'Kickout engine unavailable.',
+            'confidence': 'low'
+        }
+
 
 def cv_status() -> Dict[str, Any]:
     return {
         "enabled": yolo_available(),
-        "phase": "player_detection_team_colour_shape_possession_tracking_transition_intelligence",
+        "phase": "player_detection_team_colour_shape_possession_tracking_transition_intelligence_kickout_analysis",
         "features": [
             "player_detection",
             "team_colour_grouping",
@@ -53,6 +67,8 @@ def cv_status() -> Dict[str, Any]:
             "possession_inference",
             "transition_detection",
             "transition_outcome_scoring",
+            "kickout_ownership_detection",
+            "kickout_retention_estimation",
             "turnover_estimation",
         ],
     }
@@ -80,15 +96,20 @@ def attach_cv_summary(event: Dict[str, Any], video_path: str) -> Dict[str, Any]:
 def build_match_possession_summary(events: List[Dict[str, Any]], facts=None) -> Dict[str, Any]:
     possession = infer_possession_sequences(events, facts)
     transitions = analyse_transition_patterns(possession.get('chains', []))
+    kickouts = analyse_kickout_patterns(possession.get('chains', []))
 
     return {
         'possession': possession,
         'transitions': transitions,
+        'kickouts': kickouts,
         'summary': {
             'dominantOwner': possession.get('dominantOwner'),
             'estimatedTurnovers': possession.get('estimatedTurnovers'),
             'successfulTransitions': transitions.get('successfulTransitions'),
             'failedTransitions': transitions.get('failedTransitions'),
+            'kickoutsIdentified': kickouts.get('kickoutsIdentified'),
+            'kickoutRetentionRate': kickouts.get('retentionRate'),
             'mainTransitionTheme': transitions.get('mainCoachingTheme'),
+            'mainKickoutTheme': kickouts.get('mainCoachingTheme'),
         }
     }
