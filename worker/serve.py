@@ -34,6 +34,7 @@ ORIGINAL_AGGREGATE_EVIDENCE = main.aggregate_evidence
 ORIGINAL_BUILD_REPORT_PROMPT = main.build_report_prompt
 ORIGINAL_GENERATE_ANALYSIS = main.generate_analysis
 ORIGINAL_FALLBACK_EVENT_CANDIDATES = main.fallback_event_candidates
+ORIGINAL_SCAN_VIDEO_FRAME_DIFFERENCES = main.scan_video_frame_differences
 DEBUG_REPORTS = {}
 LATEST_DEBUG_REPORT_ID = None
 VIDEO_INGESTION_STATUS = {
@@ -41,6 +42,8 @@ VIDEO_INGESTION_STATUS = {
     'metadataPatch': bool(robust_extract_video_metadata),
     'downloadPatch': bool(robust_download_match_video),
 }
+LAST_DOWNLOAD_DEBUG = {}
+LAST_SCAN_DEBUG = {}
 
 
 @app.get('/cv-status')
@@ -62,6 +65,62 @@ def get_debug_report(report_id: str):
     if report_id not in DEBUG_REPORTS:
         raise HTTPException(status_code=404, detail='Debug report not found. Generate a fresh report after this endpoint is deployed.')
     return DEBUG_REPORTS[report_id]
+
+
+def download_match_video_with_debug(url, tmpdir, profile):
+    global LAST_DOWNLOAD_DEBUG
+    LAST_DOWNLOAD_DEBUG = {
+        'attempted': True,
+        'ok': False,
+        'error': '',
+        'path': '',
+        'tmpdir': tmpdir,
+        'profileFormat': (profile or {}).get('videoFormat'),
+    }
+
+    if not robust_download_match_video:
+        LAST_DOWNLOAD_DEBUG['error'] = 'robust_download_match_video unavailable'
+        return None
+
+    try:
+        path = robust_download_match_video(url, tmpdir, profile or {})
+        LAST_DOWNLOAD_DEBUG['path'] = path or ''
+        LAST_DOWNLOAD_DEBUG['ok'] = bool(path)
+
+        try:
+            import os
+            import json
+            debug_path = os.path.join(tmpdir, 'download_debug.json')
+            if os.path.exists(debug_path):
+                with open(debug_path, 'r', encoding='utf-8') as handle:
+                    LAST_DOWNLOAD_DEBUG.update(json.load(handle))
+        except Exception as exc:
+            LAST_DOWNLOAD_DEBUG['debugReadError'] = str(exc)[:500]
+
+        return path
+    except Exception as exc:
+        LAST_DOWNLOAD_DEBUG['error'] = str(exc)[:1000]
+        return None
+
+
+def scan_video_frame_differences_with_debug(video_path, profile, max_scan_seconds=7200):
+    global LAST_SCAN_DEBUG
+    LAST_SCAN_DEBUG = {
+        'attempted': True,
+        'ok': False,
+        'error': '',
+        'videoPath': video_path or '',
+        'scanIntervalSeconds': (profile or {}).get('scanIntervalSeconds'),
+        'differenceCount': 0,
+    }
+    try:
+        differences = ORIGINAL_SCAN_VIDEO_FRAME_DIFFERENCES(video_path, profile, max_scan_seconds)
+        LAST_SCAN_DEBUG['differenceCount'] = len(differences or [])
+        LAST_SCAN_DEBUG['ok'] = bool(differences)
+        return differences
+    except Exception as exc:
+        LAST_SCAN_DEBUG['error'] = str(exc)[:1000]
+        return []
 
 
 def dense_fallback_event_candidates(metadata):
@@ -202,7 +261,9 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
         'targetClassifiedWindows': 80,
         'targetGapSeconds': 12,
         'fallbackEvents': len([event for event in events if isinstance(event, dict) and event.get('fallbackMode')]),
-        'note': 'If fallbackEvents is high, video download/frame scanning is still failing even though dense fallback prevents only-four-window reports.'
+        'downloadDebug': LAST_DOWNLOAD_DEBUG,
+        'scanDebug': LAST_SCAN_DEBUG,
+        'note': 'If fallbackEvents is high, check downloadDebug and scanDebug to see whether video download or ffmpeg frame scanning failed.'
     }
     return evidence
 
@@ -279,6 +340,8 @@ def generate_analysis_with_debug(request, job_id=None):
         'videoIngestionStatus': VIDEO_INGESTION_STATUS,
         'videoMetadata': result.get('videoMetadata'),
         'videoMetadataDebug': (result.get('videoMetadata') or {}).get('debug'),
+        'downloadDebug': LAST_DOWNLOAD_DEBUG,
+        'scanDebug': LAST_SCAN_DEBUG,
         'matchFacts': result.get('matchFacts'),
         'matchEvidence': result.get('matchEvidence'),
         'eventCandidateCount': len(result.get('eventCandidates') or []),
@@ -304,8 +367,9 @@ def generate_analysis_with_debug(request, job_id=None):
 if robust_extract_video_metadata:
     main.extract_video_metadata = robust_extract_video_metadata
 if robust_download_match_video:
-    main.download_match_video = robust_download_match_video
+    main.download_match_video = download_match_video_with_debug
 
+main.scan_video_frame_differences = scan_video_frame_differences_with_debug
 main.fallback_event_candidates = dense_fallback_event_candidates
 main.build_event_candidates = build_event_candidates_with_cv
 main.aggregate_evidence = aggregate_evidence_with_cv
