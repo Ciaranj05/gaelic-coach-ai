@@ -1,7 +1,8 @@
 import tempfile
+import uuid
 
 import main
-from main import app
+from main import app, HTTPException
 
 try:
     from cv_integration import cv_status, run_cv_on_event
@@ -24,11 +25,20 @@ except Exception:
 ORIGINAL_BUILD_EVENT_CANDIDATES = main.build_event_candidates
 ORIGINAL_AGGREGATE_EVIDENCE = main.aggregate_evidence
 ORIGINAL_BUILD_REPORT_PROMPT = main.build_report_prompt
+ORIGINAL_GENERATE_ANALYSIS = main.generate_analysis
+DEBUG_REPORTS = {}
 
 
 @app.get('/cv-status')
 def get_cv_status():
     return cv_status()
+
+
+@app.get('/debug-report/{report_id}')
+def get_debug_report(report_id: str):
+    if report_id not in DEBUG_REPORTS:
+        raise HTTPException(status_code=404, detail='Debug report not found. Generate a fresh report after this endpoint is deployed.')
+    return DEBUG_REPORTS[report_id]
 
 
 def dominant_colour(cv_result):
@@ -118,6 +128,13 @@ def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=N
 def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, zones=None, momentum=None):
     evidence = ORIGINAL_AGGREGATE_EVIDENCE(events, facts, sequences, possession, zones, momentum)
     evidence['gaelicStatEngine'] = estimate_gaelic_stats(events, evidence)
+    evidence['debugDensity'] = {
+        'eventsReturnedToEvidence': len([event for event in events if isinstance(event, dict)]),
+        'targetCandidateWindows': 160,
+        'targetClassifiedWindows': 80,
+        'targetGapSeconds': 12,
+        'note': 'If eventsReturnedToEvidence is low, filtering inside build_event_candidates is still over-pruning.'
+    }
     return evidence
 
 
@@ -181,6 +198,36 @@ Additional tracker rules:
 '''
 
 
+def generate_analysis_with_debug(request, job_id=None):
+    result = ORIGINAL_GENERATE_ANALYSIS(request, job_id)
+    report_id = getattr(request, 'reportId', None) or str(uuid.uuid4())
+    result['reportId'] = report_id
+    debug_payload = {
+        'reportId': report_id,
+        'status': result.get('status'),
+        'processingProfile': result.get('processingProfile'),
+        'videoMetadata': result.get('videoMetadata'),
+        'matchFacts': result.get('matchFacts'),
+        'matchEvidence': result.get('matchEvidence'),
+        'eventCandidateCount': len(result.get('eventCandidates') or []),
+        'classificationCount': len(result.get('eventClassifications') or []),
+        'sequenceCount': len(result.get('tacticalSequences') or []),
+        'clipCount': len(result.get('clips') or []),
+        'scoringCueCount': len(result.get('scoringCues') or []),
+        'kickoutEventCount': len(result.get('kickoutEvents') or []),
+        'turnoverEventCount': len(result.get('turnoverEvents') or []),
+        'transitionEventCount': len(result.get('transitionEvents') or []),
+        'firstEvents': (result.get('eventCandidates') or [])[:12],
+        'gaelicStatEngine': (result.get('matchEvidence') or {}).get('gaelicStatEngine'),
+        'debugDensity': (result.get('matchEvidence') or {}).get('debugDensity'),
+    }
+    DEBUG_REPORTS[report_id] = debug_payload
+    result['debugReportUrl'] = f'/debug-report/{report_id}'
+    result['debug'] = debug_payload
+    return result
+
+
 main.build_event_candidates = build_event_candidates_with_cv
 main.aggregate_evidence = aggregate_evidence_with_cv
 main.build_report_prompt = build_report_prompt_with_cv
+main.generate_analysis = generate_analysis_with_debug
