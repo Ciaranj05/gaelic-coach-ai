@@ -13,6 +13,7 @@ type MatchContext = {
   teamBPoints?: number
   scoreline?: string
   competition?: string
+  sourceType?: string
 }
 
 type AnalyseRequest = {
@@ -42,7 +43,9 @@ function isSupportedUrl(url: string) {
     url.includes('youtu.be') ||
     url.includes('vimeo.com') ||
     url.includes('veo.co') ||
-    url.includes('drive.google.com')
+    url.includes('drive.google.com') ||
+    url.includes('storage.googleapis.com') ||
+    url.includes('googleapis.com')
   )
 }
 
@@ -86,7 +89,7 @@ function buildDemoReport(url: string, matchContext?: MatchContext, reportId = ra
       mode: 'demo',
       sourceUrl: url,
       workerReached: false,
-      supportedProviders: ['YouTube', 'Vimeo', 'Veo', 'Google Drive'],
+      supportedProviders: ['YouTube', 'Vimeo', 'Veo', 'Google Drive', 'Google Cloud Storage uploads'],
       createdAt: new Date().toISOString()
     }
   }
@@ -184,7 +187,7 @@ export async function POST(request: Request) {
 
     if (!isSupportedUrl(url)) {
       return NextResponse.json(
-        { error: 'Please provide a YouTube, Vimeo, Veo, or Google Drive link.' },
+        { error: 'Please provide a YouTube, Vimeo, Veo, Google Drive, or uploaded video link.' },
         { status: 400 }
       )
     }
