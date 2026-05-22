@@ -5,6 +5,13 @@ import main
 from main import app, HTTPException
 
 try:
+    from video_ingestion import extract_video_metadata as robust_extract_video_metadata
+    from video_ingestion import download_match_video as robust_download_match_video
+except Exception:
+    robust_extract_video_metadata = None
+    robust_download_match_video = None
+
+try:
     from cv_integration import cv_status, run_cv_on_event
 except Exception:
     def cv_status():
@@ -29,11 +36,18 @@ ORIGINAL_GENERATE_ANALYSIS = main.generate_analysis
 ORIGINAL_FALLBACK_EVENT_CANDIDATES = main.fallback_event_candidates
 DEBUG_REPORTS = {}
 LATEST_DEBUG_REPORT_ID = None
+VIDEO_INGESTION_STATUS = {
+    'enabled': bool(robust_extract_video_metadata and robust_download_match_video),
+    'metadataPatch': bool(robust_extract_video_metadata),
+    'downloadPatch': bool(robust_download_match_video),
+}
 
 
 @app.get('/cv-status')
 def get_cv_status():
-    return cv_status()
+    status = cv_status()
+    status['videoIngestion'] = VIDEO_INGESTION_STATUS
+    return status
 
 
 @app.get('/debug-report/latest')
@@ -262,7 +276,9 @@ def generate_analysis_with_debug(request, job_id=None):
         'reportId': report_id,
         'status': result.get('status'),
         'processingProfile': result.get('processingProfile'),
+        'videoIngestionStatus': VIDEO_INGESTION_STATUS,
         'videoMetadata': result.get('videoMetadata'),
+        'videoMetadataDebug': (result.get('videoMetadata') or {}).get('debug'),
         'matchFacts': result.get('matchFacts'),
         'matchEvidence': result.get('matchEvidence'),
         'eventCandidateCount': len(result.get('eventCandidates') or []),
@@ -284,6 +300,11 @@ def generate_analysis_with_debug(request, job_id=None):
     result['debug'] = debug_payload
     return result
 
+
+if robust_extract_video_metadata:
+    main.extract_video_metadata = robust_extract_video_metadata
+if robust_download_match_video:
+    main.download_match_video = robust_download_match_video
 
 main.fallback_event_candidates = dense_fallback_event_candidates
 main.build_event_candidates = build_event_candidates_with_cv
