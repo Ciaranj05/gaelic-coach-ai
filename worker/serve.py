@@ -27,11 +27,19 @@ ORIGINAL_AGGREGATE_EVIDENCE = main.aggregate_evidence
 ORIGINAL_BUILD_REPORT_PROMPT = main.build_report_prompt
 ORIGINAL_GENERATE_ANALYSIS = main.generate_analysis
 DEBUG_REPORTS = {}
+LATEST_DEBUG_REPORT_ID = None
 
 
 @app.get('/cv-status')
 def get_cv_status():
     return cv_status()
+
+
+@app.get('/debug-report/latest')
+def get_latest_debug_report():
+    if not LATEST_DEBUG_REPORT_ID or LATEST_DEBUG_REPORT_ID not in DEBUG_REPORTS:
+        raise HTTPException(status_code=404, detail='No debug report has been generated since the worker last restarted.')
+    return DEBUG_REPORTS[LATEST_DEBUG_REPORT_ID]
 
 
 @app.get('/debug-report/{report_id}')
@@ -199,6 +207,7 @@ Additional tracker rules:
 
 
 def generate_analysis_with_debug(request, job_id=None):
+    global LATEST_DEBUG_REPORT_ID
     result = ORIGINAL_GENERATE_ANALYSIS(request, job_id)
     report_id = getattr(request, 'reportId', None) or str(uuid.uuid4())
     result['reportId'] = report_id
@@ -222,7 +231,9 @@ def generate_analysis_with_debug(request, job_id=None):
         'debugDensity': (result.get('matchEvidence') or {}).get('debugDensity'),
     }
     DEBUG_REPORTS[report_id] = debug_payload
+    LATEST_DEBUG_REPORT_ID = report_id
     result['debugReportUrl'] = f'/debug-report/{report_id}'
+    result['latestDebugReportUrl'] = '/debug-report/latest'
     result['debug'] = debug_payload
     return result
 
