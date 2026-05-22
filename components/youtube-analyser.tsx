@@ -16,7 +16,7 @@ type Report = {
 }
 
 function isVideoUrl(value: string) {
-  return value.includes('youtube.com') || value.includes('youtu.be') || value.includes('vimeo.com') || value.includes('veo.co')
+  return value.includes('youtube.com') || value.includes('youtu.be') || value.includes('vimeo.com') || value.includes('veo.co') || value.includes('drive.google.com')
 }
 
 function escapeHtml(value: string) {
@@ -266,7 +266,7 @@ export default function YouTubeAnalyser() {
 
     if (!isVideoUrl(url)) {
       setStatus('error')
-      setError('Please enter a valid YouTube, Vimeo, or Veo link.')
+      setError('Please enter a valid YouTube, Vimeo, Veo, or Google Drive link.')
       return
     }
 
@@ -320,7 +320,7 @@ export default function YouTubeAnalyser() {
       <p className="mt-2 text-sm text-slate-500">Add match context first. The full report is downloaded separately so the page stays clean.</p>
 
       <div className="mt-6 space-y-4">
-        <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="YouTube, Vimeo or Veo match link" className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
+        <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="YouTube, Vimeo, Veo or Google Drive match link" className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
         <div className="grid gap-3 md:grid-cols-2">
           <input value={teamA} onChange={(event) => setTeamA(event.target.value)} placeholder="Team A name *" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
           <input value={teamB} onChange={(event) => setTeamB(event.target.value)} placeholder="Team B name *" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none placeholder:text-slate-400 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
