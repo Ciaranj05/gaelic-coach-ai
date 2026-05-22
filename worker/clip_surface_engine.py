@@ -37,6 +37,8 @@ def build_clip(event: Dict[str, Any], reason: str, category: str, score: int) ->
     start_second = max(0, int(event.get('startSecond') or 0) - 8)
     end_second = int(event.get('endSecond') or start_second + 25) + 8
 
+    clip_label = f"{category.replace('_', ' ').title()} – {event.get('time', 'Unknown')}"
+
     return {
         'category': category,
         'time': event.get('time'),
@@ -46,7 +48,9 @@ def build_clip(event: Dict[str, Any], reason: str, category: str, score: int) ->
         'reason': reason,
         'score': score,
         'confidence': event.get('confidence', 'low'),
-        'clipLabel': f"{category.replace('_', ' ').title()} – {event.get('time', 'Unknown')}",
+        'clipLabel': clip_label,
+        'exportReady': True,
+        'clipKey': clip_label.lower().replace(' ', '_').replace('–', '_'),
     }
 
 
@@ -91,7 +95,8 @@ def surface_priority_clips(events: List[Dict[str, Any]], transitions: Dict[str, 
             'reason': transition.get('coachingInterpretation'),
             'score': OUTCOME_PRIORITY[outcome] + confidence_score(transition.get('confidence')),
             'confidence': transition.get('confidence'),
-            'clipLabel': f"Transition Outcome – {transition.get('time', 'Unknown')}"
+            'clipLabel': f"Transition Outcome – {transition.get('time', 'Unknown')}",
+            'exportReady': False,
         })
 
     for kickout in (kickouts or {}).get('kickoutOutcomes', []):
@@ -103,7 +108,8 @@ def surface_priority_clips(events: List[Dict[str, Any]], transitions: Dict[str, 
             'reason': kickout.get('coachingInterpretation'),
             'score': 2 + confidence_score(kickout.get('confidence')),
             'confidence': kickout.get('confidence'),
-            'clipLabel': f"Kickout Review – {kickout.get('time', 'Unknown')}"
+            'clipLabel': f"Kickout Review – {kickout.get('time', 'Unknown')}",
+            'exportReady': False,
         })
 
     surfaced = sorted(surfaced, key=lambda item: item.get('score', 0), reverse=True)
