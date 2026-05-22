@@ -60,6 +60,11 @@ def log_step(stage, detail=None):
     print(f"[GAELIC_AI] {stage}: {detail or ''}", flush=True)
 
 
+def is_uploaded_storage_url(url):
+    lower = (url or '').lower()
+    return 'storage.googleapis.com' in lower or 'googleapis.com' in lower
+
+
 @app.get('/cv-status')
 def get_cv_status():
     status = cv_status()
@@ -123,6 +128,8 @@ def download_match_video_with_debug(url, tmpdir, profile):
 
 def scan_video_frame_differences_with_debug(video_path, profile, max_scan_seconds=7200):
     global LAST_SCAN_DEBUG
+    if int((profile or {}).get('maxScanSeconds') or 0) > 0:
+        max_scan_seconds = int(profile.get('maxScanSeconds'))
     log_step('scan_start', {'videoPath': video_path, 'interval': (profile or {}).get('scanIntervalSeconds'), 'maxScanSeconds': max_scan_seconds})
     LAST_SCAN_DEBUG = {
         'attempted': True,
@@ -130,6 +137,7 @@ def scan_video_frame_differences_with_debug(video_path, profile, max_scan_second
         'error': '',
         'videoPath': video_path or '',
         'scanIntervalSeconds': (profile or {}).get('scanIntervalSeconds'),
+        'maxScanSeconds': max_scan_seconds,
         'differenceCount': 0,
     }
     try:
@@ -149,8 +157,8 @@ def dense_fallback_event_candidates(metadata):
     if duration <= 0:
         duration = 4200
 
-    count = 160
-    gap = max(12, duration // count)
+    count = 80
+    gap = max(30, duration // count)
     log_step('dense_fallback_start', {'duration': duration, 'count': count, 'gap': gap})
     labels = [
         'kickout_restart',
@@ -252,20 +260,35 @@ def estimate_gaelic_stats(events, match_evidence):
 
 
 def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=None, facts=None):
-    tactical_density_profile = {
-        **(profile or {}),
-        'candidateCount': max(int((profile or {}).get('candidateCount', 42)), 160),
-        'classifiedEventCount': max(int((profile or {}).get('classifiedEventCount', 26)), 80),
-        'minEventGapSeconds': min(int((profile or {}).get('minEventGapSeconds', 60)), 12),
-        'clipCount': max(int((profile or {}).get('clipCount', 8)), 20),
-    }
+    uploaded = is_uploaded_storage_url(url)
+    if uploaded:
+        tactical_density_profile = {
+            **(profile or {}),
+            'name': 'uploaded-full-match-safe',
+            'scanIntervalSeconds': max(int((profile or {}).get('scanIntervalSeconds', 1)), 5),
+            'maxScanSeconds': 5400,
+            'candidateCount': 48,
+            'classifiedEventCount': 10,
+            'eventFramePack': 3,
+            'minEventGapSeconds': 90,
+            'clipCount': 0,
+            'videoFormat': 'best[height<=360]/best',
+        }
+    else:
+        tactical_density_profile = {
+            **(profile or {}),
+            'candidateCount': max(int((profile or {}).get('candidateCount', 42)), 80),
+            'classifiedEventCount': max(int((profile or {}).get('classifiedEventCount', 26)), 20),
+            'minEventGapSeconds': min(int((profile or {}).get('minEventGapSeconds', 60)), 45),
+            'clipCount': max(int((profile or {}).get('clipCount', 8)), 8),
+        }
 
     enriched_metadata = {**(metadata or {})}
     if int(enriched_metadata.get('duration') or 0) <= 0:
         enriched_metadata['duration'] = 4200
         enriched_metadata['durationSource'] = 'defaulted_70_minute_match_due_to_missing_metadata'
 
-    log_step('event_candidates_start', {'duration': enriched_metadata.get('duration'), 'profile': tactical_density_profile})
+    log_step('event_candidates_start', {'duration': enriched_metadata.get('duration'), 'uploadedSafeMode': uploaded, 'profile': tactical_density_profile})
     events = ORIGINAL_BUILD_EVENT_CANDIDATES(
         url,
         enriched_metadata,
@@ -274,7 +297,7 @@ def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=N
         job_id,
         facts,
     )
-    log_step('event_candidates_complete', {'events': len(events or [])})
+    log_step('event_candidates_complete', {'events': len(events or []), 'classified': len([e for e in (events or []) if isinstance(e, dict) and e.get('classification')])})
     return events
 
 
@@ -284,14 +307,14 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
     evidence['gaelicStatEngine'] = estimate_gaelic_stats(events, evidence)
     evidence['debugDensity'] = {
         'eventsReturnedToEvidence': len([event for event in events if isinstance(event, dict)]),
-        'targetCandidateWindows': 160,
-        'targetClassifiedWindows': 80,
-        'targetGapSeconds': 12,
+        'targetCandidateWindows': 48,
+        'targetClassifiedWindows': 10,
+        'targetGapSeconds': 90,
         'fallbackEvents': len([event for event in events if isinstance(event, dict) and event.get('fallbackMode')]),
         'downloadDebug': LAST_DOWNLOAD_DEBUG,
         'scanDebug': LAST_SCAN_DEBUG,
         'processLog': PROCESS_LOG[-40:],
-        'note': 'If fallbackEvents is high, check downloadDebug and scanDebug to see whether video download or ffmpeg frame scanning failed.'
+        'note': 'Uploaded full-match safe mode uses fewer classified windows so full match uploads can complete on Railway.'
     }
     log_step('aggregate_evidence_complete', {'eventsAnalysed': evidence.get('eventsAnalysed'), 'fallbackEvents': evidence['debugDensity']['fallbackEvents']})
     return evidence
@@ -329,7 +352,7 @@ MANAGER MATCH STATS PRIORITY ORDER:
 5. Transition attacks
 6. Defensive compactness
 7. Breaking ball
-8. Shape / overloads
+8. Shape / Overloads
 
 MANAGER MATCH STATS SECTION RULES:
 - Always include a section titled: # {coached} – Manager Match Stats
