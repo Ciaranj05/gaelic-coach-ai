@@ -27,7 +27,27 @@ function isFallbackText(value: unknown) {
   return text.includes('fallback tactical checkpoint') || text.includes('dense fallback tactical checkpoint') || text.includes('video metadata/download scanning was unavailable')
 }
 
+function hasRealAnalysedEvents(data: Record<string, any>) {
+  const events = Array.isArray(data?.eventCandidates) ? data.eventCandidates : []
+  const realEvents = events.filter((event: any) => {
+    if (!event || typeof event !== 'object') return false
+    if (isFallbackText(event.reason) || isFallbackText(event.visualAnalysis)) return false
+    return Boolean(event.classification || event.matchIntelligence || event.scoreOutcome || event.kickoutVisual || event.framesAnalysed)
+  })
+
+  const evidenceEvents = Number(data?.matchEvidence?.eventsAnalysed ?? 0)
+  const classifications = Array.isArray(data?.eventClassifications) ? data.eventClassifications.length : 0
+  const sequences = Array.isArray(data?.tacticalSequences) ? data.tacticalSequences.length : 0
+  const clips = Array.isArray(data?.clips) ? data.clips.length : 0
+
+  return realEvents.length > 0 || evidenceEvents > 0 || classifications > 0 || sequences > 0 || clips > 0
+}
+
 function hasFallbackEvidence(data: Record<string, any>) {
+  // Real analysed events should always win. Some older worker responses can contain
+  // stale fallback wording inside analysis text even though frame analysis succeeded.
+  if (hasRealAnalysedEvents(data)) return false
+
   const analysis = String(data?.analysis ?? '')
   if (isFallbackText(analysis)) return true
 
@@ -61,14 +81,14 @@ function buildTimelineFromWorker(data: Record<string, any>): TimelineItem[] {
   return events
     .filter((event: any) => event && typeof event === 'object')
     .filter((event: any) => !isFallbackText(event.reason) && !isFallbackText(event.visualAnalysis))
-    .filter((event: any) => event.classification || ['turnover', 'fast_transition', 'kickout_restart', 'breaking_ball', 'scoring_chance'].includes(String(event.type)))
+    .filter((event: any) => event.classification || event.matchIntelligence || event.scoreOutcome || event.kickoutVisual || ['turnover', 'fast_transition', 'kickout_restart', 'breaking_ball', 'scoring_chance'].includes(String(event.type)))
     .slice(0, 20)
     .map((event: any) => ({
       minute: String(event.time ?? 'N/A'),
-      note: String(event.visualAnalysis || event.classification?.coachingReason || event.reason || 'Review this tactical moment.'),
+      note: String(event.visualAnalysis || event.classification?.coachingReason || event.reason || event.kickoutVisual?.reasoning || 'Review this tactical moment.'),
       category: humanise(event.type),
-      confidence: String(event.classification?.confidence || event.confidence || 'estimated'),
-      reason: String(event.classification?.coachingReason || event.reason || ''),
+      confidence: String(event.classification?.confidence || event.matchIntelligence?.confidence || event.confidence || 'estimated'),
+      reason: String(event.classification?.coachingReason || event.reason || event.kickoutVisual?.reasoning || ''),
       startSecond: Number.isFinite(Number(event.startSecond)) ? Number(event.startSecond) : undefined,
       endSecond: Number.isFinite(Number(event.endSecond)) ? Number(event.endSecond) : undefined,
     }))
@@ -99,6 +119,7 @@ function fallbackSafeReport(job: Record<string, any>, result: Record<string, any
       stage: job.stage,
       detail: job.detail,
       fallbackSuppressed: true,
+      realAnalysedEvents: hasRealAnalysedEvents(result),
       matchEvidence: result.matchEvidence,
       timelineCount: 0,
       debugReportUrl: result.debugReportUrl,
@@ -134,6 +155,7 @@ function normaliseCompletedJob(job: Record<string, any>) {
       progress: job.progress,
       stage: job.stage,
       detail: job.detail,
+      realAnalysedEvents: hasRealAnalysedEvents(result),
       matchEvidence: result.matchEvidence,
       managerStatSummary: result.matchEvidence?.managerStatSummary,
       timelineCount: timeline.length,
