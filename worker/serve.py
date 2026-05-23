@@ -16,18 +16,10 @@ try:
     from cv_integration import cv_status, run_cv_on_event
 except Exception:
     def cv_status():
-        return {
-            'enabled': False,
-            'phase': 'player_detection_team_colour_shape',
-            'reason': 'cv_integration module unavailable'
-        }
+        return {'enabled': False, 'phase': 'player_detection_team_colour_shape', 'reason': 'cv_integration module unavailable'}
 
     def run_cv_on_event(video_path, start_second, end_second):
-        return {
-            'enabled': False,
-            'status': 'unavailable',
-            'reason': 'cv_integration module unavailable'
-        }
+        return {'enabled': False, 'status': 'unavailable', 'reason': 'cv_integration module unavailable'}
 
 
 ORIGINAL_BUILD_EVENT_CANDIDATES = main.build_event_candidates
@@ -36,13 +28,10 @@ ORIGINAL_BUILD_REPORT_PROMPT = main.build_report_prompt
 ORIGINAL_GENERATE_ANALYSIS = main.generate_analysis
 ORIGINAL_FALLBACK_EVENT_CANDIDATES = main.fallback_event_candidates
 ORIGINAL_SCAN_VIDEO_FRAME_DIFFERENCES = main.scan_video_frame_differences
+ORIGINAL_BUILD_MATCH_FACTS = main.build_match_facts
 DEBUG_REPORTS = {}
 LATEST_DEBUG_REPORT_ID = None
-VIDEO_INGESTION_STATUS = {
-    'enabled': bool(robust_extract_video_metadata and robust_download_match_video),
-    'metadataPatch': bool(robust_extract_video_metadata),
-    'downloadPatch': bool(robust_download_match_video),
-}
+VIDEO_INGESTION_STATUS = {'enabled': bool(robust_extract_video_metadata and robust_download_match_video), 'metadataPatch': bool(robust_extract_video_metadata), 'downloadPatch': bool(robust_download_match_video)}
 LAST_DOWNLOAD_DEBUG = {}
 LAST_SCAN_DEBUG = {}
 PROCESS_LOG = []
@@ -59,6 +48,25 @@ def log_step(stage, detail=None):
 def is_uploaded_storage_url(url):
     lower = (url or '').lower()
     return 'storage.googleapis.com' in lower or 'googleapis.com' in lower
+
+
+def clean_colour(value):
+    return str(value or '').strip().lower()
+
+
+def build_match_facts_with_colour_lock(ctx):
+    facts = ORIGINAL_BUILD_MATCH_FACTS(ctx or {})
+    ctx = ctx or {}
+    facts['teamAColourInput'] = clean_colour(ctx.get('teamAColour') or ctx.get('teamAColours'))
+    facts['teamBColourInput'] = clean_colour(ctx.get('teamBColour') or ctx.get('teamBColours'))
+    coached = facts.get('coachedTeam')
+    if coached == facts.get('teamA'):
+        facts['coachedTeamColourInput'] = facts['teamAColourInput']
+        facts['oppositionColourInput'] = facts['teamBColourInput']
+    else:
+        facts['coachedTeamColourInput'] = facts['teamBColourInput']
+        facts['oppositionColourInput'] = facts['teamAColourInput']
+    return facts
 
 
 @app.get('/cv-status')
@@ -153,6 +161,20 @@ def dominant_colour(cv_result):
     return max(colours, key=colours.get)
 
 
+def visible_colour_match(input_colour, visible_value):
+    input_colour = clean_colour(input_colour)
+    visible_value = clean_colour(visible_value)
+    return bool(input_colour and visible_value and (input_colour in visible_value or visible_value in input_colour))
+
+
+def locked_team_for_colour(colour, facts):
+    if visible_colour_match(facts.get('teamAColourInput'), colour):
+        return facts.get('teamA')
+    if visible_colour_match(facts.get('teamBColourInput'), colour):
+        return facts.get('teamB')
+    return 'unknown'
+
+
 def track_possession_and_turnovers(events):
     previous_colour = None
     possessions = {}
@@ -184,6 +206,34 @@ def estimate_gaelic_stats(events, match_evidence):
     return {'estimatedTurnoversFromContinuity': tracker.get('estimatedTurnoversFromContinuity', 0),'estimatedKickoutRetentions': tracker.get('estimatedKickoutRetentions', 0),'estimatedKickoutsTracked': tracker.get('estimatedKickoutsTracked', 0),'dominantPossessionColours': tracker.get('dominantPossessionColours', {}),'trackerConfidence': tracker.get('confidence', 'low'),'cvWidthCue': match_evidence.get('cvWidthCue', 'unknown'),'cvCompactnessCue': match_evidence.get('cvCompactnessCue', 'unknown'),'cvOverloadCue': match_evidence.get('cvOverloadCue', 'unknown')}
 
 
+def apply_colour_lock_to_event(event, facts):
+    if not isinstance(event, dict):
+        return event
+    team_colours = event.get('teamColours') or {}
+    visible = team_colours.get('visibleKits') or []
+    if isinstance(visible, list):
+        for kit in visible:
+            team = locked_team_for_colour(kit, facts or {})
+            if team != 'unknown':
+                if team == facts.get('teamA'):
+                    team_colours['teamAColour'] = facts.get('teamAColourInput') or kit
+                if team == facts.get('teamB'):
+                    team_colours['teamBColour'] = facts.get('teamBColourInput') or kit
+                team_colours['confidence'] = 'high'
+    if facts.get('coachedTeam') == facts.get('teamA'):
+        team_colours['coachedTeamColour'] = team_colours.get('teamAColour') or facts.get('teamAColourInput') or 'unknown'
+        team_colours['oppositionColour'] = team_colours.get('teamBColour') or facts.get('teamBColourInput') or 'unknown'
+    else:
+        team_colours['coachedTeamColour'] = team_colours.get('teamBColour') or facts.get('teamBColourInput') or 'unknown'
+        team_colours['oppositionColour'] = team_colours.get('teamAColour') or facts.get('teamAColourInput') or 'unknown'
+    event['teamColours'] = team_colours
+    cls = event.get('classification') or {}
+    if cls:
+        cls['teamColours'] = team_colours
+        event['classification'] = cls
+    return event
+
+
 def value_or_unknown(value, confidence='Estimated'):
     if value in [None, '', 'unknown']:
         return {'value': 'Unknown', 'confidence': 'Low confidence'}
@@ -204,45 +254,23 @@ def build_manager_stat_summary(facts, evidence):
         top_zone = (evidence.get('fieldZoneSummary') or {}).get('topSequenceZones', [['Unknown', 0]])[0][0]
     except Exception:
         top_zone = 'Unknown'
-
-    return {
-        'score': {'value': facts.get('scoreline'), 'confidence': 'Confirmed'},
-        'result': {'value': f"{facts.get('coachedTeam')} {facts.get('coachedTeamResult')} by {facts.get('margin')} point(s)", 'confidence': 'Confirmed'},
-        'goalsFor': {'value': facts.get('coachedGoals'), 'confidence': 'Confirmed'},
-        'goalsAgainst': {'value': facts.get('oppositionGoals'), 'confidence': 'Confirmed'},
-        'pointsFor': {'value': facts.get('coachedPoints'), 'confidence': 'Confirmed'},
-        'pointsAgainst': {'value': facts.get('oppositionPoints'), 'confidence': 'Confirmed'},
-        'turnoversWon': {'value': turnovers_for if turnovers_for else 'Unknown', 'confidence': 'Estimated' if turnovers_for else 'Low confidence'},
-        'turnoversLost': {'value': turnovers_against if turnovers_against else 'Unknown', 'confidence': 'Estimated' if turnovers_against else 'Low confidence'},
-        'positiveTransitions': {'value': transition_positive if transition_positive else 'Unknown', 'confidence': 'Estimated' if transition_positive else 'Low confidence'},
-        'negativeTransitions': {'value': transition_negative if transition_negative else 'Unknown', 'confidence': 'Estimated' if transition_negative else 'Low confidence'},
-        'breakingBallContests': {'value': breaking_balls if breaking_balls else 'Unknown', 'confidence': 'Estimated' if breaking_balls else 'Low confidence'},
-        'kickoutsIdentified': {'value': kickout_tracked if kickout_tracked else 'Unknown', 'confidence': 'Low confidence'},
-        'kickoutsRetained': {'value': kickout_retained if kickout_retained else 'Unknown', 'confidence': 'Low confidence'},
-        'kickoutsLost': {'value': kickout_lost if kickout_lost else 'Unknown', 'confidence': 'Low confidence'},
-        'mainBattleZone': {'value': top_zone if top_zone != 'unknown' else 'Unknown', 'confidence': 'Estimated' if top_zone not in ['Unknown', 'unknown'] else 'Low confidence'},
-        'scoreDetection': {'value': 'Not reliable from video yet; scoreline comes from user input', 'confidence': 'Low confidence'},
-        'managerSummary': [
-            'Confirmed scoreboard performance is strong.',
-            'Estimated improvement focus is possession security and transition execution.',
-            'Kickout outcome quality is not reliable yet; show identified kickout structures but avoid retention percentages until tracking improves.'
-        ]
-    }
+    return {'score': {'value': facts.get('scoreline'), 'confidence': 'Confirmed'},'result': {'value': f"{facts.get('coachedTeam')} {facts.get('coachedTeamResult')} by {facts.get('margin')} point(s)", 'confidence': 'Confirmed'},'goalsFor': {'value': facts.get('coachedGoals'), 'confidence': 'Confirmed'},'goalsAgainst': {'value': facts.get('oppositionGoals'), 'confidence': 'Confirmed'},'pointsFor': {'value': facts.get('coachedPoints'), 'confidence': 'Confirmed'},'pointsAgainst': {'value': facts.get('oppositionPoints'), 'confidence': 'Confirmed'},'turnoversWon': {'value': turnovers_for if turnovers_for else 'Unknown', 'confidence': 'Estimated' if turnovers_for else 'Low confidence'},'turnoversLost': {'value': turnovers_against if turnovers_against else 'Unknown', 'confidence': 'Estimated' if turnovers_against else 'Low confidence'},'positiveTransitions': {'value': transition_positive if transition_positive else 'Unknown', 'confidence': 'Estimated' if transition_positive else 'Low confidence'},'negativeTransitions': {'value': transition_negative if transition_negative else 'Unknown', 'confidence': 'Estimated' if transition_negative else 'Low confidence'},'breakingBallContests': {'value': breaking_balls if breaking_balls else 'Unknown', 'confidence': 'Estimated' if breaking_balls else 'Low confidence'},'kickoutsIdentified': {'value': kickout_tracked if kickout_tracked else 'Unknown', 'confidence': 'Low confidence'},'kickoutsRetained': {'value': kickout_retained if kickout_retained else 'Unknown', 'confidence': 'Low confidence'},'kickoutsLost': {'value': kickout_lost if kickout_lost else 'Unknown', 'confidence': 'Low confidence'},'mainBattleZone': {'value': top_zone if top_zone != 'unknown' else 'Unknown', 'confidence': 'Estimated' if top_zone not in ['Unknown', 'unknown'] else 'Low confidence'},'scoreDetection': {'value': 'Not reliable from video yet; scoreline comes from user input', 'confidence': 'Low confidence'},'managerSummary': ['Confirmed scoreboard performance is strong.','Estimated improvement focus is possession security and transition execution.','Kickout outcome quality is not reliable yet; show identified kickout structures but avoid retention percentages until tracking improves.']}
 
 
 def build_event_candidates_with_cv(url, metadata, profile, client=None, job_id=None, facts=None):
     uploaded = is_uploaded_storage_url(url)
     if uploaded:
-        tactical_density_profile = {**(profile or {}),'name': 'uploaded-full-match-safe','scanIntervalSeconds': max(int((profile or {}).get('scanIntervalSeconds', 1)), 5),'maxScanSeconds': 5400,'candidateCount': 48,'classifiedEventCount': 10,'eventFramePack': 3,'minEventGapSeconds': 90,'clipCount': 0,'videoFormat': 'best[height<=360]/best'}
+        tactical_density_profile = {**(profile or {}),'name': 'uploaded-full-match-dense-events','scanIntervalSeconds': 5,'maxScanSeconds': 5400,'candidateCount': 64,'classifiedEventCount': 16,'eventFramePack': 12,'minEventGapSeconds': 75,'clipCount': 8,'videoFormat': 'best[height<=360]/best'}
     else:
-        tactical_density_profile = {**(profile or {}),'candidateCount': max(int((profile or {}).get('candidateCount', 42)), 80),'classifiedEventCount': max(int((profile or {}).get('classifiedEventCount', 26)), 20),'minEventGapSeconds': min(int((profile or {}).get('minEventGapSeconds', 60)), 45),'clipCount': max(int((profile or {}).get('clipCount', 8)), 8)}
+        tactical_density_profile = {**(profile or {}),'candidateCount': max(int((profile or {}).get('candidateCount', 42)), 80),'classifiedEventCount': max(int((profile or {}).get('classifiedEventCount', 26)), 24),'eventFramePack': max(int((profile or {}).get('eventFramePack', 6)), 12),'minEventGapSeconds': min(int((profile or {}).get('minEventGapSeconds', 60)), 45),'clipCount': max(int((profile or {}).get('clipCount', 8)), 8)}
     enriched_metadata = {**(metadata or {})}
     if int(enriched_metadata.get('duration') or 0) <= 0:
         enriched_metadata['duration'] = 4200
         enriched_metadata['durationSource'] = 'defaulted_70_minute_match_due_to_missing_metadata'
     log_step('event_candidates_start', {'duration': enriched_metadata.get('duration'), 'uploadedSafeMode': uploaded, 'profile': tactical_density_profile})
     events = ORIGINAL_BUILD_EVENT_CANDIDATES(url, enriched_metadata, tactical_density_profile, client, job_id, facts)
-    log_step('event_candidates_complete', {'events': len(events or []), 'classified': len([e for e in (events or []) if isinstance(e, dict) and e.get('classification')])})
+    events = [apply_colour_lock_to_event(e, facts or {}) for e in (events or [])]
+    log_step('event_candidates_complete', {'events': len(events or []), 'classified': len([e for e in (events or []) if isinstance(e, dict) and e.get('classification')]), 'eventFramePack': tactical_density_profile.get('eventFramePack')})
     return events
 
 
@@ -251,7 +279,7 @@ def aggregate_evidence_with_cv(events, facts, sequences=None, possession=None, z
     evidence = ORIGINAL_AGGREGATE_EVIDENCE(events, facts, sequences, possession, zones, momentum)
     evidence['gaelicStatEngine'] = estimate_gaelic_stats(events, evidence)
     evidence['managerStatSummary'] = build_manager_stat_summary(facts or {}, evidence)
-    evidence['debugDensity'] = {'eventsReturnedToEvidence': len([event for event in events if isinstance(event, dict)]),'targetCandidateWindows': 48,'targetClassifiedWindows': 10,'targetGapSeconds': 90,'fallbackEvents': len([event for event in events if isinstance(event, dict) and event.get('fallbackMode')]),'downloadDebug': LAST_DOWNLOAD_DEBUG,'scanDebug': LAST_SCAN_DEBUG,'processLog': PROCESS_LOG[-40:],'note': 'Debug only. Do not show these engineering stats in the manager report.'}
+    evidence['debugDensity'] = {'eventsReturnedToEvidence': len([event for event in events if isinstance(event, dict)]),'targetCandidateWindows': 64,'targetClassifiedWindows': 16,'targetGapSeconds': 75,'eventFramePack': 12,'fallbackEvents': len([event for event in events if isinstance(event, dict) and event.get('fallbackMode')]),'downloadDebug': LAST_DOWNLOAD_DEBUG,'scanDebug': LAST_SCAN_DEBUG,'processLog': PROCESS_LOG[-40:],'note': 'Debug only. Do not show these engineering stats in the manager report.'}
     log_step('aggregate_evidence_complete', {'eventsAnalysed': evidence.get('eventsAnalysed'), 'fallbackEvents': evidence['debugDensity']['fallbackEvents']})
     return evidence
 
@@ -262,6 +290,12 @@ def build_report_prompt_with_cv(coached, opposition, facts, rules, metadata, eve
     base_prompt = ORIGINAL_BUILD_REPORT_PROMPT(coached, opposition, facts, rules, metadata, events, timeline, sequences, possession_continuity, field_zones, momentum_phases, match_evidence, notes, profile)
     log_step('report_prompt_complete', {'promptLength': len(base_prompt or '')})
     return base_prompt + f'''
+
+CRITICAL TEMPORAL ANALYSIS RULES:
+- Event windows are now dense temporal sequences, not single screenshots. Treat each event as a mini passage of play.
+- Prefer observations that describe change over time: possession start, possession end, territory gained/lost, support runners, defensive recovery and transition quality.
+- When colour locking is available, use user-entered team colours as the anchor: {facts.get('teamA')} = {facts.get('teamAColourInput')}, {facts.get('teamB')} = {facts.get('teamBColourInput')}.
+- If the visual model says team colour is unknown but visible kits match the user-entered colours, use the locked colour mapping cautiously and mark confidence as Estimated.
 
 CRITICAL MANAGER REPORT RULES:
 - Do NOT mention engineering/debug metrics such as events analysed, classified windows, scan frames, candidate windows, prompt length, download size, or processing profile.
@@ -315,6 +349,7 @@ def generate_analysis_with_debug(request, job_id=None):
     return result
 
 
+main.build_match_facts = build_match_facts_with_colour_lock
 if robust_extract_video_metadata:
     main.extract_video_metadata = robust_extract_video_metadata
 if robust_download_match_video:
