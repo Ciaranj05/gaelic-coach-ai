@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from kickout_reference import compare_candidate_to_reference_library, scan_match_for_kickouts_with_reference_library
+from kickout_profile_scan import scan_match_for_kickouts_with_profile
 
 router = APIRouter()
 
@@ -20,6 +21,14 @@ class KickoutReferenceScanRequest(BaseModel):
     intervalSeconds: int = 120
     maxFrames: int = 30
     minSimilarity: int = 60
+
+
+class KickoutProfileScanRequest(BaseModel):
+    videoUrl: str
+    bucketName: str | None = None
+    intervalSeconds: int = 30
+    maxFrames: int = 200
+    includeReview: bool = True
 
 
 @router.get('/debug/env-keys')
@@ -57,6 +66,20 @@ def debug_kickout_reference_scan(request: KickoutReferenceScanRequest):
             interval_seconds=request.intervalSeconds,
             max_frames=request.maxFrames,
             min_similarity=request.minSimilarity,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post('/debug/kickout-profile-scan')
+def debug_kickout_profile_scan(request: KickoutProfileScanRequest):
+    try:
+        return scan_match_for_kickouts_with_profile(
+            video_url=request.videoUrl,
+            bucket_name=request.bucketName or 'gaelic-coach-ai-uploads',
+            interval_seconds=request.intervalSeconds,
+            max_frames=request.maxFrames,
+            include_review=request.includeReview,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
