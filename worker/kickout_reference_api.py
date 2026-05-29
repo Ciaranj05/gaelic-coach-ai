@@ -14,6 +14,24 @@ class KickoutReferenceTestRequest(BaseModel):
     bucketName: str | None = None
 
 
+@router.get('/debug/env-keys')
+def debug_env_keys():
+    prefixes = ('GCP', 'GCS', 'GOOGLE', 'OPENAI', 'RAILWAY')
+    visible_keys = sorted([key for key in os.environ.keys() if key.startswith(prefixes)])
+    return {
+        'ok': True,
+        'visibleKeys': visible_keys,
+        'count': len(visible_keys),
+        'hasExpected': {
+            'GCP_PROJECT_ID': 'GCP_PROJECT_ID' in os.environ,
+            'GCP_CLIENT_EMAIL': 'GCP_CLIENT_EMAIL' in os.environ,
+            'GCP_PRIVATE_KEY': 'GCP_PRIVATE_KEY' in os.environ,
+            'GCS_UPLOAD_BUCKET': 'GCS_UPLOAD_BUCKET' in os.environ,
+            'OPENAI_API_KEY': 'OPENAI_API_KEY' in os.environ,
+        }
+    }
+
+
 @router.get('/debug/env-check')
 def debug_env_check():
     private_key = os.getenv('GCP_PRIVATE_KEY') or ''
