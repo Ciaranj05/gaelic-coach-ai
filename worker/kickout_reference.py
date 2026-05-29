@@ -151,6 +151,33 @@ def get_video_duration_seconds(video_path: str) -> int:
         return 0
 
 
+def kickout_decision(parsed: dict[str, Any]) -> dict[str, Any]:
+    try:
+        kickout_similarity = int(parsed.get('kickoutSimilarity') or 0)
+    except Exception:
+        kickout_similarity = 0
+    try:
+        non_kickout_similarity = int(parsed.get('nonKickoutSimilarity') or 0)
+    except Exception:
+        non_kickout_similarity = 0
+    label = str(parsed.get('label') or '')
+
+    is_yes = kickout_similarity >= 80 and kickout_similarity > non_kickout_similarity and label in ['likely_kickout', 'possible_kickout']
+    is_review = not is_yes and kickout_similarity >= 60 and kickout_similarity > non_kickout_similarity
+
+    if is_yes:
+        decision = 'YES'
+        manager_label = 'Kickout identified'
+    elif is_review:
+        decision = 'REVIEW'
+        manager_label = 'Possible kickout — review'
+    else:
+        decision = 'NO'
+        manager_label = 'Not a kickout'
+
+    return {'isKickout': is_yes, 'decision': decision, 'managerLabel': manager_label}
+
+
 def compare_frame_paths_to_reference(client: OpenAI, candidate_path: str, positive_paths: list[str], negative_paths: list[str]) -> dict[str, Any]:
     content: list[dict[str, Any]] = [{
         'type': 'text',
@@ -171,9 +198,11 @@ Be conservative. If candidate resembles open play, clusters, active tackling, or
     raw = response.choices[0].message.content or '{}'
     try:
         import json
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except Exception:
-        return {'raw': raw}
+        parsed = {'raw': raw}
+    parsed.update(kickout_decision(parsed))
+    return parsed
 
 
 def compare_candidate_to_reference_library(video_url: str, timestamp: int = 0, bucket_name: str = DEFAULT_BUCKET) -> dict[str, Any]:
@@ -244,9 +273,13 @@ def scan_match_for_kickouts_with_reference_library(
             kickout_similarity = int(parsed.get('kickoutSimilarity') or 0)
             non_kickout_similarity = int(parsed.get('nonKickoutSimilarity') or 0)
             label = str(parsed.get('label') or 'unknown')
+            decision = kickout_decision(parsed)
             row = {
                 'timestamp': timestamp,
                 'time': f'{timestamp//60:02d}:{timestamp%60:02d}',
+                'isKickout': decision['isKickout'],
+                'decision': decision['decision'],
+                'managerLabel': decision['managerLabel'],
                 'kickoutSimilarity': kickout_similarity,
                 'nonKickoutSimilarity': non_kickout_similarity,
                 'label': label,
@@ -254,7 +287,7 @@ def scan_match_for_kickouts_with_reference_library(
                 'reasoning': parsed.get('reasoning', ''),
             }
             results.append(row)
-            if label in ['likely_kickout', 'possible_kickout'] and kickout_similarity >= min_similarity and kickout_similarity > non_kickout_similarity:
+            if decision['isKickout']:
                 candidates.append(row)
 
     return {
