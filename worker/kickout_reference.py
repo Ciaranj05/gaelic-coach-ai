@@ -215,8 +215,8 @@ def scan_match_for_kickouts_with_reference_library(
     if not api_key:
         raise RuntimeError('OPENAI_API_KEY is missing')
 
-    interval_seconds = max(30, int(interval_seconds or 120))
-    max_frames = max(1, min(60, int(max_frames or 30)))
+    interval_seconds = max(15, int(interval_seconds or 120))
+    max_frames = max(1, min(500, int(max_frames or 30)))
     min_similarity = max(0, min(100, int(min_similarity or 60)))
 
     positive_names = list_reference_images(bucket_name, POSITIVE_PREFIX, limit=10)
