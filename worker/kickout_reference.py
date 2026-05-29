@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 from typing import Any
+from urllib.parse import urlparse, unquote
 
 from google.cloud import storage
 from google.oauth2 import service_account
@@ -56,6 +57,28 @@ def _image_content_from_path(path: str) -> dict[str, Any]:
     return {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}', 'detail': 'low'}}
 
 
+def parse_gcs_url(url: str) -> tuple[str, str] | None:
+    parsed = urlparse(url)
+    if parsed.netloc == 'storage.googleapis.com':
+        parts = parsed.path.lstrip('/').split('/', 1)
+        if len(parts) == 2:
+            return parts[0], unquote(parts[1])
+    if parsed.netloc.endswith('.storage.googleapis.com'):
+        bucket = parsed.netloc.replace('.storage.googleapis.com', '')
+        return bucket, unquote(parsed.path.lstrip('/'))
+    return None
+
+
+def download_gcs_object(bucket_name: str, object_name: str, target_path: str) -> str:
+    client = get_storage_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(object_name)
+    if not blob.exists():
+        raise RuntimeError(f'GCS object not found: gs://{bucket_name}/{object_name}')
+    blob.download_to_filename(target_path)
+    return target_path
+
+
 def list_reference_images(bucket_name: str, prefix: str, limit: int = 10) -> list[str]:
     client = get_storage_client()
     blobs = client.list_blobs(bucket_name, prefix=prefix)
@@ -82,18 +105,28 @@ def download_reference_images(bucket_name: str, names: list[str], target_dir: st
     return paths
 
 
-def extract_video_frame(video_url: str, timestamp: int, target_dir: str) -> str:
-    video_path = os.path.join(target_dir, 'match.mp4')
-    frame_path = os.path.join(target_dir, 'candidate.jpg')
+def download_video(video_url: str, target_path: str) -> str:
+    gcs_ref = parse_gcs_url(video_url)
+    if gcs_ref:
+        bucket_name, object_name = gcs_ref
+        return download_gcs_object(bucket_name, object_name, target_path)
+
     with yt_dlp.YoutubeDL({
         'format': 'best[height<=360]/best',
-        'outtmpl': video_path,
+        'outtmpl': target_path,
         'quiet': True,
         'noplaylist': True,
         'merge_output_format': 'mp4',
         'nocheckcertificate': True,
     }) as ydl:
         ydl.download([video_url])
+    return target_path
+
+
+def extract_video_frame(video_url: str, timestamp: int, target_dir: str) -> str:
+    video_path = os.path.join(target_dir, 'match.mp4')
+    frame_path = os.path.join(target_dir, 'candidate.jpg')
+    download_video(video_url, video_path)
     subprocess.run([
         'ffmpeg', '-y', '-ss', str(max(0, int(timestamp))), '-i', video_path,
         '-frames:v', '1', '-vf', 'scale=768:-1', frame_path,
