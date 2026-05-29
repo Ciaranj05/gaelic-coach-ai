@@ -20,24 +20,34 @@ def get_storage_client() -> storage.Client:
     client_email = os.getenv('GCP_CLIENT_EMAIL')
     private_key = os.getenv('GCP_PRIVATE_KEY')
 
-    if project_id and client_email and private_key:
-        private_key = private_key.replace('\\n', '\n')
-        credentials = service_account.Credentials.from_service_account_info({
-            'type': 'service_account',
-            'project_id': project_id,
-            'private_key_id': os.getenv('GCP_PRIVATE_KEY_ID', ''),
-            'private_key': private_key,
-            'client_email': client_email,
-            'client_id': os.getenv('GCP_CLIENT_ID', ''),
-            'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-            'token_uri': 'https://oauth2.googleapis.com/token',
-            'auth_provider_x509_cert_url': 'https://www.googleapis.com/oauth2/v1/certs',
-            'client_x509_cert_url': f'https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace("@", "%40")}',
-            'universe_domain': 'googleapis.com',
-        })
-        return storage.Client(project=project_id, credentials=credentials)
+    missing = []
+    if not project_id:
+        missing.append('GCP_PROJECT_ID')
+    if not client_email:
+        missing.append('GCP_CLIENT_EMAIL')
+    if not private_key:
+        missing.append('GCP_PRIVATE_KEY')
+    if missing:
+        raise RuntimeError(f"Missing Railway env vars for GCS auth: {', '.join(missing)}")
 
-    return storage.Client()
+    private_key = private_key.replace('\\n', '\n')
+    if 'BEGIN PRIVATE KEY' not in private_key or 'END PRIVATE KEY' not in private_key:
+        raise RuntimeError('GCP_PRIVATE_KEY is present but does not contain valid BEGIN/END PRIVATE KEY markers')
+
+    credentials = service_account.Credentials.from_service_account_info({
+        'type': 'service_account',
+        'project_id': project_id,
+        'private_key_id': os.getenv('GCP_PRIVATE_KEY_ID', ''),
+        'private_key': private_key,
+        'client_email': client_email,
+        'client_id': os.getenv('GCP_CLIENT_ID', ''),
+        'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+        'auth_provider_x509_cert_url': 'https://www.googleapis.com/oauth2/v1/certs',
+        'client_x509_cert_url': f'https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace("@", "%40")}',
+        'universe_domain': 'googleapis.com',
+    })
+    return storage.Client(project=project_id, credentials=credentials)
 
 
 def _image_content_from_path(path: str) -> dict[str, Any]:
