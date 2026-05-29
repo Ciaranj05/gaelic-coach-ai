@@ -9,21 +9,36 @@ from kickout_reference import (
     POSITIVE_PREFIX,
     NEGATIVE_PREFIX,
     _image_content_from_path,
-    compare_frame_paths_to_reference,
     download_reference_images,
     download_video,
     extract_video_frame_from_file,
     get_video_duration_seconds,
-    kickout_decision,
     list_reference_images,
 )
 
 
 DEFAULT_KICKOUT_PROFILE = '''
-Gaelic football kickout visual profile:
-YES / likely kickout when the frame shows a restart setup with a goalkeeper or restart player deep near the goal area, the ball appears static or restart-like, players are spread into short/wide/long receiving lanes, immediate pressure is low, and the shape looks structured from defensive third into middle third.
-NO / not a kickout when the frame shows open play, active tackling/contact, clustered contests around the ball, sideline congestion, attacking-third action, running transition, the ball already moving in play, or no clear restart structure.
-Use a conservative manager-facing decision. Return YES only for clear restart setups, REVIEW for plausible but uncertain kickout shapes, and NO for open play.
+Gaelic football kickout visual profile — STRICT MODE:
+A confirmed kickout is a dead-ball restart from the goalkeeper/defensive goal area after a score or wide. Do not call ordinary structured possession a kickout.
+
+YES / Kickout identified only when most of these are visible:
+- Goalkeeper or restart taker is clearly deep in/near the defensive goal area.
+- Ball appears stationary or restart-like, not already live in open play.
+- Players are waiting/set rather than actively running, tackling, contesting, or transitioning.
+- Receiving team is spread into deliberate short, wide, middle, or long kickout lanes.
+- Immediate pressure is low or organised as a press rather than a live tackle/contest.
+- The frame clearly looks like a restart moment, not just a structured attacking or defensive shape.
+
+REVIEW only when the frame has a plausible restart shape but one key cue is missing, such as unclear ball status or unclear goalkeeper/restart taker.
+
+NO / Not a kickout when:
+- It only shows players in a structured formation or spaced shape.
+- The ball is live, players are running, tackling, contesting, or transitioning.
+- The camera shows midfield/open play with no defensive goal-area restart context.
+- There is sideline play, attacking-third play, a free, a mark, or general possession shape.
+- The goalkeeper/restart taker and dead-ball setup are not visible.
+
+Be conservative. False positives are worse than missing borderline cases. Return YES only for clear kickouts.
 '''.strip()
 
 
@@ -46,6 +61,13 @@ def build_kickout_profile_from_library(bucket_name: str = DEFAULT_BUCKET) -> dic
                 'text': '''Create a compact reusable Gaelic football kickout visual profile from these labelled examples.
 Positive images are confirmed kickout setups. Negative images are confirmed non-kickouts/open play.
 Return JSON only with keys: profile, yesRules, noRules, reviewRules.
+
+STRICT requirements:
+- YES must require dead-ball restart context, preferably goalkeeper/restart taker near defensive goal area.
+- Do NOT use generic structured formation, spacing, or players in zones as enough for YES.
+- General open play, live possession, running, tackling, transition, sideline play, free/mark, or attacking shape must be NO.
+- REVIEW is only for plausible restart frames missing one key cue.
+- False positives are worse than missed borderline cases.
 The profile must be short enough to reuse when scanning many match frames.'''
             },
             {'type': 'text', 'text': 'POSITIVE KICKOUT EXAMPLES:'},
@@ -68,7 +90,11 @@ The profile must be short enough to reuse when scanning many match frames.'''
     except Exception:
         parsed = {'profile': DEFAULT_KICKOUT_PROFILE, 'raw': raw}
 
-    profile = str(parsed.get('profile') or DEFAULT_KICKOUT_PROFILE)
+    learned_profile = str(parsed.get('profile') or '').strip()
+    profile = DEFAULT_KICKOUT_PROFILE
+    if learned_profile:
+        profile = f'{DEFAULT_KICKOUT_PROFILE}\n\nReference-library notes:\n{learned_profile}'
+
     return {
         'profile': profile,
         'yesRules': parsed.get('yesRules', []),
@@ -88,7 +114,7 @@ def classify_frame_with_profile(client: OpenAI, frame_path: str, profile: str) -
     content: list[dict[str, Any]] = [
         {
             'type': 'text',
-            'text': f'''Classify this Gaelic football frame using the reusable kickout visual profile below.
+            'text': f'''Classify this Gaelic football frame using the STRICT kickout visual profile below.
 
 {profile}
 
@@ -99,10 +125,14 @@ Return JSON only with keys:
 - confidence: low|medium|high
 - reasoning: short reason
 
-Decision rules:
-YES only when it is clearly a kickout/restart setup.
-REVIEW when it could be a kickout but visual evidence is uncertain.
-NO when it is open play, transition, tackling, clustered contest, or not a restart.'''
+STRICT decision rules:
+YES = only a clear dead-ball kickout/restart, ideally with goalkeeper/restart taker near defensive goal area, ball static/restart-like, and players waiting/set in kickout lanes.
+REVIEW = plausible restart but missing one important cue.
+NO = open play, live ball, transition, tackling, clustered contest, sideline/free/mark, attacking shape, midfield shape, or only generic structured spacing.
+Do not say YES just because players are organised, spread, or in zones.
+If unsure between YES and REVIEW, choose REVIEW.
+If unsure between REVIEW and NO, choose NO.
+False positives are worse than missing borderline kickouts.'''
         },
         {'type': 'text', 'text': 'CANDIDATE FRAME:'},
         _image_content_from_path(frame_path),
@@ -117,7 +147,7 @@ NO when it is open play, transition, tackling, clustered contest, or not a resta
         import json
         parsed = json.loads(raw)
     except Exception:
-        parsed = {'decision': 'REVIEW', 'isKickout': False, 'managerLabel': 'Possible kickout — review', 'confidence': 'low', 'reasoning': raw}
+        parsed = {'decision': 'NO', 'isKickout': False, 'managerLabel': 'Not a kickout', 'confidence': 'low', 'reasoning': raw}
 
     decision = str(parsed.get('decision') or 'NO').upper()
     if decision not in ['YES', 'REVIEW', 'NO']:
@@ -135,7 +165,7 @@ def scan_match_for_kickouts_with_profile(
     bucket_name: str = DEFAULT_BUCKET,
     interval_seconds: int = 30,
     max_frames: int = 200,
-    include_review: bool = True,
+    include_review: bool = False,
 ) -> dict[str, Any]:
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
@@ -176,7 +206,7 @@ def scan_match_for_kickouts_with_profile(
 
     return {
         'ok': True,
-        'test': 'kickout-profile-full-match-scan',
+        'test': 'kickout-profile-full-match-scan-strict',
         'durationSeconds': duration,
         'intervalSeconds': interval_seconds,
         'framesTested': len(results),
