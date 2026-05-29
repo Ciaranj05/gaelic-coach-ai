@@ -123,17 +123,57 @@ def download_video(video_url: str, target_path: str) -> str:
     return target_path
 
 
-def extract_video_frame(video_url: str, timestamp: int, target_dir: str) -> str:
-    video_path = os.path.join(target_dir, 'match.mp4')
-    frame_path = os.path.join(target_dir, 'candidate.jpg')
-    download_video(video_url, video_path)
+def extract_video_frame_from_file(video_path: str, timestamp: int, target_dir: str, name: str = 'candidate') -> str:
+    frame_path = os.path.join(target_dir, f'{name}.jpg')
     subprocess.run([
         'ffmpeg', '-y', '-ss', str(max(0, int(timestamp))), '-i', video_path,
         '-frames:v', '1', '-vf', 'scale=768:-1', frame_path,
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     if not os.path.exists(frame_path):
-        raise RuntimeError('Unable to extract candidate frame from video')
+        raise RuntimeError(f'Unable to extract candidate frame at {timestamp}s from video')
     return frame_path
+
+
+def extract_video_frame(video_url: str, timestamp: int, target_dir: str) -> str:
+    video_path = os.path.join(target_dir, 'match.mp4')
+    download_video(video_url, video_path)
+    return extract_video_frame_from_file(video_path, timestamp, target_dir, 'candidate')
+
+
+def get_video_duration_seconds(video_path: str) -> int:
+    result = subprocess.run([
+        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1', video_path,
+    ], capture_output=True, text=True, check=False)
+    try:
+        return max(0, int(float(result.stdout.strip())))
+    except Exception:
+        return 0
+
+
+def compare_frame_paths_to_reference(client: OpenAI, candidate_path: str, positive_paths: list[str], negative_paths: list[str]) -> dict[str, Any]:
+    content: list[dict[str, Any]] = [{
+        'type': 'text',
+        'text': '''You are testing a Gaelic football kickout reference library. Compare the candidate frame against labelled examples.
+Positive examples are confirmed kickout setups. Negative examples are confirmed non-kickouts/open play.
+Return JSON only with: kickoutSimilarity 0-100, nonKickoutSimilarity 0-100, label likely_kickout|possible_kickout|unlikely_kickout|not_kickout, confidence low|medium|high, positiveMatches array, negativeMatches array, reasoning string.
+Be conservative. If candidate resembles open play, clusters, active tackling, or transition, mark not_kickout.'''
+    }, {'type': 'text', 'text': 'CANDIDATE FRAME:'}, _image_content_from_path(candidate_path), {'type': 'text', 'text': 'POSITIVE KICKOUT EXAMPLES:'}]
+    content.extend(_image_content_from_path(path) for path in positive_paths)
+    content.append({'type': 'text', 'text': 'NEGATIVE NON-KICKOUT EXAMPLES:'})
+    content.extend(_image_content_from_path(path) for path in negative_paths)
+
+    response = client.chat.completions.create(
+        model='gpt-4o-mini',
+        response_format={'type': 'json_object'},
+        messages=[{'role': 'user', 'content': content}],
+    )
+    raw = response.choices[0].message.content or '{}'
+    try:
+        import json
+        return json.loads(raw)
+    except Exception:
+        return {'raw': raw}
 
 
 def compare_candidate_to_reference_library(video_url: str, timestamp: int = 0, bucket_name: str = DEFAULT_BUCKET) -> dict[str, Any]:
@@ -150,31 +190,8 @@ def compare_candidate_to_reference_library(video_url: str, timestamp: int = 0, b
         candidate_path = extract_video_frame(video_url, timestamp, tmpdir)
         positive_paths = download_reference_images(bucket_name, positive_names, os.path.join(tmpdir, 'positive'))
         negative_paths = download_reference_images(bucket_name, negative_names, os.path.join(tmpdir, 'negative'))
-
-        content: list[dict[str, Any]] = [{
-            'type': 'text',
-            'text': '''You are testing a Gaelic football kickout reference library. Compare the candidate frame against labelled examples.
-Positive examples are confirmed kickout setups. Negative examples are confirmed non-kickouts/open play.
-Return JSON only with: kickoutSimilarity 0-100, nonKickoutSimilarity 0-100, label likely_kickout|possible_kickout|unlikely_kickout|not_kickout, confidence low|medium|high, positiveMatches array, negativeMatches array, reasoning string.
-Be conservative. If candidate resembles open play, clusters, active tackling, or transition, mark not_kickout.'''
-        }, {'type': 'text', 'text': 'CANDIDATE FRAME:'}, _image_content_from_path(candidate_path), {'type': 'text', 'text': 'POSITIVE KICKOUT EXAMPLES:'}]
-        content.extend(_image_content_from_path(path) for path in positive_paths)
-        content.append({'type': 'text', 'text': 'NEGATIVE NON-KICKOUT EXAMPLES:'})
-        content.extend(_image_content_from_path(path) for path in negative_paths)
-
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model='gpt-4o-mini',
-            response_format={'type': 'json_object'},
-            messages=[{'role': 'user', 'content': content}],
-        )
-        raw = response.choices[0].message.content or '{}'
-
-    try:
-        import json
-        parsed = json.loads(raw)
-    except Exception:
-        parsed = {'raw': raw}
+        parsed = compare_frame_paths_to_reference(client, candidate_path, positive_paths, negative_paths)
 
     parsed['referenceLibrary'] = {
         'bucket': bucket_name,
@@ -185,3 +202,75 @@ Be conservative. If candidate resembles open play, clusters, active tackling, or
     }
     parsed['timestamp'] = timestamp
     return parsed
+
+
+def scan_match_for_kickouts_with_reference_library(
+    video_url: str,
+    bucket_name: str = DEFAULT_BUCKET,
+    interval_seconds: int = 120,
+    max_frames: int = 30,
+    min_similarity: int = 60,
+) -> dict[str, Any]:
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        raise RuntimeError('OPENAI_API_KEY is missing')
+
+    interval_seconds = max(30, int(interval_seconds or 120))
+    max_frames = max(1, min(60, int(max_frames or 30)))
+    min_similarity = max(0, min(100, int(min_similarity or 60)))
+
+    positive_names = list_reference_images(bucket_name, POSITIVE_PREFIX, limit=10)
+    negative_names = list_reference_images(bucket_name, NEGATIVE_PREFIX, limit=10)
+    if not positive_names or not negative_names:
+        raise RuntimeError('Kickout reference library is missing positive or negative images')
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        video_path = os.path.join(tmpdir, 'match.mp4')
+        download_video(video_url, video_path)
+        duration = get_video_duration_seconds(video_path)
+        if duration <= 0:
+            raise RuntimeError('Unable to read video duration for kickout reference scan')
+
+        positive_paths = download_reference_images(bucket_name, positive_names, os.path.join(tmpdir, 'positive'))
+        negative_paths = download_reference_images(bucket_name, negative_names, os.path.join(tmpdir, 'negative'))
+        client = OpenAI(api_key=api_key)
+
+        timestamps = list(range(0, duration, interval_seconds))[:max_frames]
+        results: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        for index, timestamp in enumerate(timestamps, start=1):
+            frame_path = extract_video_frame_from_file(video_path, timestamp, tmpdir, f'candidate_{index:03d}')
+            parsed = compare_frame_paths_to_reference(client, frame_path, positive_paths, negative_paths)
+            kickout_similarity = int(parsed.get('kickoutSimilarity') or 0)
+            non_kickout_similarity = int(parsed.get('nonKickoutSimilarity') or 0)
+            label = str(parsed.get('label') or 'unknown')
+            row = {
+                'timestamp': timestamp,
+                'time': f'{timestamp//60:02d}:{timestamp%60:02d}',
+                'kickoutSimilarity': kickout_similarity,
+                'nonKickoutSimilarity': non_kickout_similarity,
+                'label': label,
+                'confidence': parsed.get('confidence', 'low'),
+                'reasoning': parsed.get('reasoning', ''),
+            }
+            results.append(row)
+            if label in ['likely_kickout', 'possible_kickout'] and kickout_similarity >= min_similarity and kickout_similarity > non_kickout_similarity:
+                candidates.append(row)
+
+    return {
+        'ok': True,
+        'test': 'kickout-reference-full-match-scan',
+        'durationSeconds': duration,
+        'intervalSeconds': interval_seconds,
+        'framesTested': len(results),
+        'candidateCount': len(candidates),
+        'candidates': candidates,
+        'allResults': results,
+        'referenceLibrary': {
+            'bucket': bucket_name,
+            'positivePrefix': POSITIVE_PREFIX,
+            'negativePrefix': NEGATIVE_PREFIX,
+            'positiveCount': len(positive_names),
+            'negativeCount': len(negative_names),
+        }
+    }
