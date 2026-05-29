@@ -5,6 +5,7 @@ import tempfile
 from typing import Any
 
 from google.cloud import storage
+from google.oauth2 import service_account
 from openai import OpenAI
 import yt_dlp
 
@@ -14,6 +15,31 @@ POSITIVE_PREFIX = os.getenv('KICKOUT_POSITIVE_PREFIX', 'kickout/positive/')
 NEGATIVE_PREFIX = os.getenv('KICKOUT_NEGATIVE_PREFIX', 'kickout/negative/')
 
 
+def get_storage_client() -> storage.Client:
+    project_id = os.getenv('GCP_PROJECT_ID')
+    client_email = os.getenv('GCP_CLIENT_EMAIL')
+    private_key = os.getenv('GCP_PRIVATE_KEY')
+
+    if project_id and client_email and private_key:
+        private_key = private_key.replace('\\n', '\n')
+        credentials = service_account.Credentials.from_service_account_info({
+            'type': 'service_account',
+            'project_id': project_id,
+            'private_key_id': os.getenv('GCP_PRIVATE_KEY_ID', ''),
+            'private_key': private_key,
+            'client_email': client_email,
+            'client_id': os.getenv('GCP_CLIENT_ID', ''),
+            'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+            'token_uri': 'https://oauth2.googleapis.com/token',
+            'auth_provider_x509_cert_url': 'https://www.googleapis.com/oauth2/v1/certs',
+            'client_x509_cert_url': f'https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace("@", "%40")}',
+            'universe_domain': 'googleapis.com',
+        })
+        return storage.Client(project=project_id, credentials=credentials)
+
+    return storage.Client()
+
+
 def _image_content_from_path(path: str) -> dict[str, Any]:
     with open(path, 'rb') as handle:
         encoded = base64.b64encode(handle.read()).decode('utf-8')
@@ -21,7 +47,7 @@ def _image_content_from_path(path: str) -> dict[str, Any]:
 
 
 def list_reference_images(bucket_name: str, prefix: str, limit: int = 10) -> list[str]:
-    client = storage.Client()
+    client = get_storage_client()
     blobs = client.list_blobs(bucket_name, prefix=prefix)
     image_names: list[str] = []
     for blob in blobs:
@@ -34,7 +60,8 @@ def list_reference_images(bucket_name: str, prefix: str, limit: int = 10) -> lis
 
 
 def download_reference_images(bucket_name: str, names: list[str], target_dir: str) -> list[str]:
-    client = storage.Client()
+    os.makedirs(target_dir, exist_ok=True)
+    client = get_storage_client()
     bucket = client.bucket(bucket_name)
     paths: list[str] = []
     for index, name in enumerate(names, start=1):
