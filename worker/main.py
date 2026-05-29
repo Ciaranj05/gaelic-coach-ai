@@ -2,10 +2,13 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from openai import OpenAI
+from kickout_reference_api import router as kickout_reference_router
 import os, yt_dlp, uuid, tempfile, subprocess, base64, json
 from datetime import datetime
 
 app = FastAPI(title='Gaelic Coach AI Worker')
+app.include_router(kickout_reference_router)
+
 CLIP_ROOT = '/tmp/gaelic-coach-ai-clips'
 os.makedirs(CLIP_ROOT, exist_ok=True)
 
